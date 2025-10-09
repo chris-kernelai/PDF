@@ -93,6 +93,10 @@ class BatchDoclingConverter:
         # Document type filter
         self.doc_type = doc_type.lower()
 
+        # Processed documents tracker
+        self.processed_tracker_file = Path("processed_documents.txt")
+        self.processed_doc_ids = self._load_processed_documents()
+
         # Setup logging
         logging.basicConfig(
             level=log_level,
@@ -112,7 +116,79 @@ class BatchDoclingConverter:
             "removed_files": 0,
             "uploaded_files": 0,
             "upload_failed_files": 0,
+            "skipped_already_processed": 0,
         }
+
+    def _load_processed_documents(self) -> set:
+        """
+        Load the set of already processed document IDs from the tracker file.
+
+        Returns:
+            Set of document IDs (as strings) that have been processed.
+        """
+        if not self.processed_tracker_file.exists():
+            return set()
+
+        try:
+            with open(self.processed_tracker_file, 'r') as f:
+                # Read all lines, strip whitespace, filter out empty lines
+                doc_ids = {line.strip() for line in f if line.strip()}
+            return doc_ids
+        except Exception as e:
+            logging.warning(f"Could not load processed documents list: {e}")
+            return set()
+
+    def _extract_doc_id_from_filename(self, pdf_file: Path) -> Optional[str]:
+        """
+        Extract document ID from PDF filename.
+        Assumes format: doc_12345.pdf -> returns "12345"
+
+        Args:
+            pdf_file: Path to PDF file
+
+        Returns:
+            Document ID as string, or None if cannot extract
+        """
+        filename = pdf_file.stem  # Get filename without extension
+        if filename.startswith('doc_'):
+            return filename[4:]  # Remove 'doc_' prefix
+        return None
+
+    def _is_already_processed(self, pdf_file: Path) -> bool:
+        """
+        Check if a document has already been processed.
+
+        Args:
+            pdf_file: Path to PDF file
+
+        Returns:
+            True if document has been processed before
+        """
+        doc_id = self._extract_doc_id_from_filename(pdf_file)
+        if doc_id is None:
+            return False
+        return doc_id in self.processed_doc_ids
+
+    def _mark_as_processed(self, pdf_file: Path):
+        """
+        Add document ID to the processed list and append to tracker file.
+
+        Args:
+            pdf_file: Path to PDF file that was successfully processed
+        """
+        doc_id = self._extract_doc_id_from_filename(pdf_file)
+        if doc_id is None:
+            return
+
+        # Add to in-memory set
+        self.processed_doc_ids.add(doc_id)
+
+        # Append to file
+        try:
+            with open(self.processed_tracker_file, 'a') as f:
+                f.write(f"{doc_id}\n")
+        except Exception as e:
+            self.logger.warning(f"Could not update processed documents list: {e}")
 
     def _get_pdf_files(self) -> List[Path]:
         """Get all PDF files from the input folder, filtered by doc_type."""
@@ -242,6 +318,11 @@ class BatchDoclingConverter:
         """
         output_path = self._get_output_path(pdf_file)
 
+        # Check if already processed
+        if self._is_already_processed(pdf_file):
+            self.logger.info("Skipping %s - already processed", pdf_file.name)
+            return pdf_file, output_path, True, "Skipped - already processed"
+
         # Skip if output file already exists
         if output_path.exists():
             self.logger.info("Skipping %s - output already exists", pdf_file.name)
@@ -362,10 +443,15 @@ class BatchDoclingConverter:
             # Update statistics, upload files, and remove successfully processed files
             for input_path, _output_path, success, error_msg in results:
                 if success:
-                    if "Skipped" in error_msg:
+                    if "Skipped - already processed" in error_msg:
+                        self.stats["skipped_already_processed"] += 1
+                    elif "Skipped" in error_msg:
                         self.stats["skipped_files"] += 1
                     else:
                         self.stats["processed_files"] += 1
+
+                        # Mark as processed
+                        self._mark_as_processed(input_path)
 
                         # Upload the PDF if upload is enabled
                         if self.upload_enabled:
@@ -403,7 +489,8 @@ class BatchDoclingConverter:
         self.logger.info("Conversion completed!")
         self.logger.info("Total files: %d", self.stats["total_files"])
         self.logger.info("Processed: %d", self.stats["processed_files"])
-        self.logger.info("Skipped: %d", self.stats["skipped_files"])
+        self.logger.info("Skipped (already processed): %d", self.stats["skipped_already_processed"])
+        self.logger.info("Skipped (output exists): %d", self.stats["skipped_files"])
         self.logger.info("Failed: %d", self.stats["failed_files"])
         if self.upload_enabled:
             self.logger.info("Uploaded: %d", self.stats["uploaded_files"])
