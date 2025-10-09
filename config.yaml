@@ -1,0 +1,81 @@
+# Librarian API Configuration
+api:
+  base_url: "https://librarian.production.primerapp.com/api/v1"
+  # Set API_KEY environment variable before running
+  api_key: "${API_KEY}"
+  timeout: 60
+  max_retries: 3
+  retry_delay: 2  # seconds
+
+# Document filters
+filters:
+  # All non-US countries
+  countries:
+    - Canada
+    - United Kingdom
+    - Germany
+    - France
+    - Japan
+    - Australia
+    - Switzerland
+    - Netherlands
+    - Sweden
+    - Norway
+    - Denmark
+    - Finland
+    - Italy
+    - Spain
+    - Belgium
+    - Austria
+    - Ireland
+    - Portugal
+    - Luxembourg
+    - Greece
+    - Czech Republic
+    - Poland
+    - Hungary
+    - Slovakia
+    - Slovenia
+    - Estonia
+    - Latvia
+    - Lithuania
+    - Cyprus
+    - Malta
+
+  # Document types to fetch
+  document_types:
+    - filing
+    - slides
+
+  # Optional date range (null = no limit)
+  date_range:
+    start: null  # e.g., "2023-01-01"
+    end: null    # e.g., "2024-12-31"
+
+# Download settings
+download:
+  # Companies to fetch per page
+  company_page_size: 100
+
+  # Documents to fetch per page
+  document_page_size: 250
+
+  # Max concurrent PDF downloads
+  concurrent_downloads: 5
+
+  # Rate limiting (seconds between requests)
+  rate_limit_delay: 0.5
+
+  # Skip documents already downloaded
+  skip_existing: true
+
+# Paths
+paths:
+  input_folder: "to_process"
+  output_folder: "processed"
+  metadata_db: "to_process/metadata.db"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "fetch_documents.log"

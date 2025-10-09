@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# API Keys and Secrets
+.env
+*.key
+*.pem
+
+# Data directories
+to_process/*.pdf
+to_process/*.db
+to_process/*.db-journal
+processed/*.md
+
+# Logs
+*.log
+fetch_documents.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+test_api.py
+test_converter.py
+
+# Temporary config
+config_test.yaml
+
+# Model cache (will be downloaded automatically)
+.cache/
+.EasyOCR/
