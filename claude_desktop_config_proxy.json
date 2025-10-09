@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "librarian": {
+      "command": "python",
+      "args": [
+        "/Users/chrismingard/Kernel/PDF/librarian_proxy.py"
+      ]
+    }
+  }
+}

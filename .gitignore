@@ -43,3 +43,4 @@ config_test.yaml
 # Model cache (will be downloaded automatically)
 .cache/
 .EasyOCR/
+venv-mcp/

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "librarian": {
+      "command": "python",
+      "args": [
+        "/Users/chrismingard/Kernel/PDF/librarian_mcp_server.py"
+      ],
+      "env": {
+        "LIBRARIAN_API_KEY": "8fc83f71-23e1-40bd-93a4-4e0a47cdcb44"
+      }
+    }
+  }
+}

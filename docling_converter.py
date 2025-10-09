@@ -35,6 +35,10 @@ class DoclingConverter:
         artifacts_path: Optional[str] = None,
         add_page_numbers: bool = False,
         use_gpu: bool = True,
+        table_mode: str = "accurate",
+        images_scale: float = 2.0,
+        do_cell_matching: bool = True,
+        ocr_confidence_threshold: float = 0.1,
     ):
         """
         Initialize the Docling converter.
@@ -43,11 +47,19 @@ class DoclingConverter:
             artifacts_path: Path for temporary artifacts. If None, uses Docling's default.
             add_page_numbers: Whether to add page numbers to the markdown output.
             use_gpu: Whether to use GPU acceleration if available (default: True).
+            table_mode: Table structure recognition mode - "accurate" (default, highest quality) or "fast".
+            images_scale: Image scaling factor for processing (default: 2.0, higher = better quality).
+            do_cell_matching: Enable precise cell matching in tables (default: True for best quality).
+            ocr_confidence_threshold: OCR confidence threshold, 0-1 (default: 0.1, lower = more text captured).
         """
         # Let Docling handle artifacts_path by default for automatic model downloads
         self.artifacts_path = artifacts_path
         self.add_page_numbers = add_page_numbers
         self.use_gpu = use_gpu
+        self.table_mode = table_mode
+        self.images_scale = images_scale
+        self.do_cell_matching = do_cell_matching
+        self.ocr_confidence_threshold = ocr_confidence_threshold
         self._converter = None
 
     def _detect_device(self) -> AcceleratorDevice:
@@ -67,60 +79,51 @@ class DoclingConverter:
         return AcceleratorDevice.CPU
 
     def _get_converter(self) -> DocumentConverter:
-        """Get or create the document converter with GPU settings."""
+        """Get or create the document converter with GPU and quality settings."""
         if self._converter is None:
-            # Only configure GPU settings, let Docling handle everything else automatically
-            if self.use_gpu:
-                device = self._detect_device()
+            device = self._detect_device() if self.use_gpu else AcceleratorDevice.CPU
 
-                # Only configure if we actually have GPU or want specific CPU settings
-                if device != AcceleratorDevice.CPU or self.artifacts_path:
-                    accelerator_options = AcceleratorOptions(
-                        num_threads=4 if device == AcceleratorDevice.CPU else 1,
-                        device=device
-                    )
+            # Configure accelerator options
+            accelerator_options = AcceleratorOptions(
+                num_threads=4 if device == AcceleratorDevice.CPU else 1,
+                device=device
+            )
 
-                    # Build minimal pipeline options
-                    pipeline_kwargs = {
-                        "accelerator_options": accelerator_options,
-                    }
+            # Configure table structure options for highest quality
+            table_structure_options = TableStructureOptions(
+                do_cell_matching=self.do_cell_matching,
+                mode=TableFormerMode.ACCURATE if self.table_mode.lower() == "accurate" else TableFormerMode.FAST
+            )
 
-                    # Only set artifacts_path if explicitly provided
-                    if self.artifacts_path:
-                        pipeline_kwargs["artifacts_path"] = self.artifacts_path
+            # Configure OCR options for highest quality
+            ocr_options = EasyOcrOptions(
+                confidence_threshold=self.ocr_confidence_threshold,
+                force_full_page_ocr=False,  # Use smart OCR detection
+            )
 
-                    pipeline_options = PdfPipelineOptions(**pipeline_kwargs)
+            # Build pipeline options with quality settings
+            pipeline_kwargs = {
+                "accelerator_options": accelerator_options,
+                "table_structure_options": table_structure_options,
+                "ocr_options": ocr_options,
+                "images_scale": self.images_scale,
+                "do_table_structure": True,  # Enable table structure recognition
+                "do_ocr": True,  # Enable OCR
+            }
 
-                    self._converter = DocumentConverter(
-                        format_options={
-                            InputFormat.PDF: PdfFormatOption(
-                                pipeline_options=pipeline_options,
-                            ),
-                        }
-                    )
-                else:
-                    # Use completely default configuration for CPU
-                    self._converter = DocumentConverter()
-            else:
-                # CPU-only mode with explicit configuration
-                accelerator_options = AcceleratorOptions(
-                    num_threads=4,
-                    device=AcceleratorDevice.CPU
-                )
+            # Only set artifacts_path if explicitly provided
+            if self.artifacts_path:
+                pipeline_kwargs["artifacts_path"] = self.artifacts_path
 
-                pipeline_kwargs = {"accelerator_options": accelerator_options}
-                if self.artifacts_path:
-                    pipeline_kwargs["artifacts_path"] = self.artifacts_path
+            pipeline_options = PdfPipelineOptions(**pipeline_kwargs)
 
-                pipeline_options = PdfPipelineOptions(**pipeline_kwargs)
-
-                self._converter = DocumentConverter(
-                    format_options={
-                        InputFormat.PDF: PdfFormatOption(
-                            pipeline_options=pipeline_options,
-                        ),
-                    }
-                )
+            self._converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=pipeline_options,
+                    ),
+                }
+            )
 
         return self._converter
 
@@ -197,6 +200,10 @@ def convert_pdf_to_markdown(
     pdf_path: Union[str, Path],
     artifacts_path: Optional[str] = None,
     add_page_numbers: bool = False,
+    table_mode: str = "accurate",
+    images_scale: float = 2.0,
+    do_cell_matching: bool = True,
+    ocr_confidence_threshold: float = 0.1,
 ) -> str:
     """
     Convert a PDF file to Markdown using Docling.
@@ -205,12 +212,21 @@ def convert_pdf_to_markdown(
         pdf_path: Path to the PDF file to convert.
         artifacts_path: Path for temporary artifacts. If None, uses system temp directory.
         add_page_numbers: Whether to add page numbers to the markdown output.
+        table_mode: Table structure recognition mode - "accurate" (default) or "fast".
+        images_scale: Image scaling factor for processing (default: 2.0).
+        do_cell_matching: Enable precise cell matching in tables (default: True).
+        ocr_confidence_threshold: OCR confidence threshold, 0-1 (default: 0.1).
 
     Returns:
         The markdown content as a string.
     """
     converter = DoclingConverter(
-        artifacts_path=artifacts_path, add_page_numbers=add_page_numbers
+        artifacts_path=artifacts_path,
+        add_page_numbers=add_page_numbers,
+        table_mode=table_mode,
+        images_scale=images_scale,
+        do_cell_matching=do_cell_matching,
+        ocr_confidence_threshold=ocr_confidence_threshold,
     )
     try:
         return converter.convert_pdf_to_markdown(pdf_path)

@@ -3,3 +3,5 @@ docling-core>=2.0.0
 aiohttp>=3.9.0
 aiofiles>=23.0.0
 pyyaml>=6.0.0
+httpx>=0.25.0
+fastmcp>=2.10.0

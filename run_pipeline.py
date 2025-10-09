@@ -8,10 +8,14 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict
+from dotenv import load_dotenv
 
 from fetch_documents import DocumentFetcher
 from batch_docling_converter import BatchDoclingConverter
 from document_metadata import MetadataManager
+
+# Load environment variables
+load_dotenv()
 
 
 class PipelineRunner:
@@ -173,6 +177,86 @@ class PipelineRunner:
         # Convert
         await self.run_convert_only()
 
+    async def run_test_batch(self, limit: int = 10, doc_type: str = "slides"):
+        """
+        Run a test batch with limited number of documents.
+
+        Args:
+            limit: Maximum number of documents to process.
+            doc_type: Type of documents to process ("slides" or "filing").
+        """
+        self.logger.info("=" * 60)
+        self.logger.info(f"Running Test Batch: {limit} {doc_type} documents")
+        self.logger.info("=" * 60)
+
+        # Step 1: Get pending documents from metadata
+        self.logger.info(f"\n[Step 1/3] Finding {doc_type} documents...")
+        pending = self.metadata.get_pending_downloads()
+
+        # Filter by document type
+        filtered_docs = [doc for doc in pending if doc.get("document_type") == doc_type]
+
+        if not filtered_docs:
+            self.logger.info("No pending documents found, fetching from API...")
+            await self.fetcher.fetch_all(download_pdfs=False)
+            pending = self.metadata.get_pending_downloads()
+            filtered_docs = [doc for doc in pending if doc.get("document_type") == doc_type]
+
+        if not filtered_docs:
+            self.logger.error(f"No {doc_type} documents found")
+            return
+
+        # Limit to requested number
+        docs_to_process = filtered_docs[:limit]
+        self.logger.info(f"Found {len(filtered_docs)} {doc_type} documents, processing {len(docs_to_process)}")
+
+        for i, doc in enumerate(docs_to_process, 1):
+            self.logger.info(f"  {i}. {doc['company_name']} ({doc['ticker']}) - ID: {doc['document_id']}")
+
+        # Step 2: Download the documents
+        self.logger.info(f"\n[Step 2/3] Downloading {len(docs_to_process)} PDFs...")
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            await self.fetcher._download_documents_batch(session, docs_to_process)
+
+        # Check download status
+        downloaded_count = sum(
+            1 for doc in docs_to_process
+            if self.metadata.get_document_by_id(doc['document_id'])['download_status'] == 'downloaded'
+        )
+        self.logger.info(f"Successfully downloaded: {downloaded_count}/{len(docs_to_process)}")
+
+        if downloaded_count == 0:
+            self.logger.error("No documents downloaded successfully")
+            return
+
+        # Step 3: Convert PDFs to markdown
+        self.logger.info(f"\n[Step 3/3] Converting {downloaded_count} PDFs to Markdown...")
+        converter = BatchDoclingConverter(
+            input_folder=self.config["paths"]["input_folder"],
+            output_folder=self.config["paths"]["output_folder"],
+            batch_size=1,
+            remove_processed=True,
+            log_level=logging.INFO,
+            use_gpu=False,  # Use CPU for test batch
+            # Maximum quality defaults will be used automatically
+        )
+
+        try:
+            conversion_stats = await converter.convert_all()
+            self._update_metadata_after_conversion(conversion_stats)
+        finally:
+            converter.cleanup()
+
+        # Final summary
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("Test Batch Complete!")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Downloaded: {downloaded_count}")
+        self.logger.info(f"Converted: {conversion_stats['processed_files']}")
+        self.logger.info(f"Failed: {conversion_stats['failed_files']}")
+        self._print_final_stats()
+
 
 async def main():
     """Command-line interface."""
@@ -200,6 +284,17 @@ async def main():
     mode_group.add_argument(
         "--stats", action="store_true", help="Show statistics only"
     )
+    mode_group.add_argument(
+        "--test-batch", action="store_true", help="Run a test batch with limited documents"
+    )
+
+    parser.add_argument(
+        "--limit", type=int, default=10, help="Number of documents for test batch (default: 10)"
+    )
+    parser.add_argument(
+        "--doc-type", choices=["slides", "filing"], default="slides",
+        help="Document type for test batch (default: slides)"
+    )
 
     args = parser.parse_args()
 
@@ -218,6 +313,8 @@ async def main():
         await pipeline.run_convert_only()
     elif args.retry_failed:
         await pipeline.retry_failed()
+    elif args.test_batch:
+        await pipeline.run_test_batch(limit=args.limit, doc_type=args.doc_type)
     else:
         # Run full pipeline
         await pipeline.run_full_pipeline()

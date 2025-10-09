@@ -11,6 +11,9 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import logging
+from datetime import datetime
+
+import httpx
 
 from docling_converter import DoclingConverter
 
@@ -33,6 +36,16 @@ class BatchDoclingConverter:
         remove_processed: bool = True,
         use_gpu: bool = True,
         log_level: int = logging.INFO,
+        table_mode: str = "accurate",
+        images_scale: float = 3.0,
+        do_cell_matching: bool = True,
+        ocr_confidence_threshold: float = 0.05,
+        upload_enabled: bool = False,
+        upload_api_url: Optional[str] = None,
+        upload_api_key: Optional[str] = None,
+        upload_ticker: Optional[str] = None,
+        upload_document_type: str = "FILING",
+        doc_type: str = "both",
     ):
         """
         Initialize the batch converter.
@@ -46,6 +59,16 @@ class BatchDoclingConverter:
             remove_processed: Whether to remove successfully processed PDF files (default: True).
             use_gpu: Whether to use GPU acceleration if available (default: True).
             log_level: Logging level for the converter.
+            table_mode: Table structure recognition mode - "accurate" (default, highest quality) or "fast".
+            images_scale: Image scaling factor for processing (default: 3.0, higher = better quality).
+            do_cell_matching: Enable precise cell matching in tables (default: True for best quality).
+            ocr_confidence_threshold: OCR confidence threshold, 0-1 (default: 0.05, lower = more text captured).
+            upload_enabled: Whether to upload converted PDFs to the API endpoint (default: False).
+            upload_api_url: Base URL for the upload API (e.g., "http://localhost:8000").
+            upload_api_key: API key for authentication.
+            upload_ticker: Ticker symbol for the uploaded documents.
+            upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
+            doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
         """
         self.input_folder = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -55,6 +78,20 @@ class BatchDoclingConverter:
         self.add_page_numbers = add_page_numbers
         self.remove_processed = remove_processed
         self.use_gpu = use_gpu
+        self.table_mode = table_mode
+        self.images_scale = images_scale
+        self.do_cell_matching = do_cell_matching
+        self.ocr_confidence_threshold = ocr_confidence_threshold
+
+        # Upload configuration
+        self.upload_enabled = upload_enabled
+        self.upload_api_url = upload_api_url
+        self.upload_api_key = upload_api_key
+        self.upload_ticker = upload_ticker
+        self.upload_document_type = upload_document_type
+
+        # Document type filter
+        self.doc_type = doc_type.lower()
 
         # Setup logging
         logging.basicConfig(
@@ -73,14 +110,33 @@ class BatchDoclingConverter:
             "failed_files": 0,
             "skipped_files": 0,
             "removed_files": 0,
+            "uploaded_files": 0,
+            "upload_failed_files": 0,
         }
 
     def _get_pdf_files(self) -> List[Path]:
-        """Get all PDF files from the input folder."""
+        """Get all PDF files from the input folder, filtered by doc_type."""
         pdf_files = []
-        for file_path in self.input_folder.rglob("*.pdf"):
-            if file_path.is_file():
-                pdf_files.append(file_path)
+
+        # Define patterns for different document types
+        filing_pattern = "*filing*.pdf"
+        slide_pattern = "*slide*.pdf"
+
+        if self.doc_type == "filings":
+            # Only get filings
+            for file_path in self.input_folder.rglob(filing_pattern):
+                if file_path.is_file():
+                    pdf_files.append(file_path)
+        elif self.doc_type == "slides":
+            # Only get slides
+            for file_path in self.input_folder.rglob(slide_pattern):
+                if file_path.is_file():
+                    pdf_files.append(file_path)
+        else:  # both
+            # Get all PDF files
+            for file_path in self.input_folder.rglob("*.pdf"):
+                if file_path.is_file():
+                    pdf_files.append(file_path)
 
         # Sort files for consistent processing order
         pdf_files.sort()
@@ -94,6 +150,85 @@ class BatchDoclingConverter:
         output_file = relative_path.with_suffix(".md")
         # Create full output path
         return self.output_folder / output_file
+
+    async def _upload_pdf(self, pdf_file: Path) -> Tuple[bool, str]:
+        """
+        Upload a PDF file to the API endpoint.
+
+        Args:
+            pdf_file: Path to the PDF file to upload.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if not self.upload_enabled:
+            return False, "Upload not enabled"
+
+        if not self.upload_api_url or not self.upload_api_key or not self.upload_ticker:
+            return False, "Upload configuration incomplete"
+
+        try:
+            # TODO: Replace with actual upload endpoint
+            # Placeholder URL - replace with your actual upload endpoint
+            upload_url = f"{self.upload_api_url.rstrip('/')}/api/v1/upload-placeholder"
+
+            # TODO: Update this payload structure to match your actual API requirements
+            # This is a placeholder structure
+            data = {
+                "ticker": self.upload_ticker,
+                "document_type": self.upload_document_type,
+                "title": pdf_file.stem,
+                "filing_date": datetime.now().isoformat() + "Z",
+                "period_date": datetime.now().isoformat() + "Z",
+            }
+
+            self.logger.info(
+                "[PLACEHOLDER] Would upload %s to %s with data: %s",
+                pdf_file.name,
+                upload_url,
+                data
+            )
+
+            # TODO: Implement actual upload logic here
+            # For now, this is a placeholder that simulates success
+            return True, f"[PLACEHOLDER] Upload simulated for {pdf_file.name}"
+
+            # Uncomment and modify this code when ready to implement actual upload:
+            # with open(pdf_file, "rb") as f:
+            #     files = {
+            #         "file": (pdf_file.name, f, "application/pdf")
+            #     }
+            #
+            #     headers = {
+            #         "Authorization": f"Bearer {self.upload_api_key}"
+            #     }
+            #
+            #     async with httpx.AsyncClient(timeout=300.0) as client:
+            #         response = await client.post(
+            #             upload_url,
+            #             files=files,
+            #             data=data,
+            #             headers=headers
+            #         )
+            #
+            #         if response.status_code == 200:
+            #             result = response.json()
+            #             document_id = result.get("id", "unknown")
+            #             self.logger.info(
+            #                 "Successfully uploaded %s (document_id: %s)",
+            #                 pdf_file.name,
+            #                 document_id
+            #             )
+            #             return True, f"Uploaded with document_id: {document_id}"
+            #         else:
+            #             error_msg = f"Upload failed with status {response.status_code}: {response.text}"
+            #             self.logger.error("Failed to upload %s: %s", pdf_file.name, error_msg)
+            #             return False, error_msg
+
+        except Exception as e:
+            error_msg = f"Upload exception: {str(e)}"
+            self.logger.error("Failed to upload %s: %s", pdf_file.name, error_msg)
+            return False, error_msg
 
     async def _convert_single_file(self, pdf_file: Path) -> Tuple[Path, Path, bool, str]:
         """
@@ -121,6 +256,10 @@ class BatchDoclingConverter:
                 artifacts_path=self.artifacts_path,
                 add_page_numbers=self.add_page_numbers,
                 use_gpu=self.use_gpu,
+                table_mode=self.table_mode,
+                images_scale=self.images_scale,
+                do_cell_matching=self.do_cell_matching,
+                ocr_confidence_threshold=self.ocr_confidence_threshold,
             )
 
             try:
@@ -220,7 +359,7 @@ class BatchDoclingConverter:
             # Process the batch
             results = await self._process_batch(batch)
 
-            # Update statistics and remove successfully processed files
+            # Update statistics, upload files, and remove successfully processed files
             for input_path, _output_path, success, error_msg in results:
                 if success:
                     if "Skipped" in error_msg:
@@ -228,8 +367,25 @@ class BatchDoclingConverter:
                     else:
                         self.stats["processed_files"] += 1
 
+                        # Upload the PDF if upload is enabled
+                        if self.upload_enabled:
+                            upload_success, upload_msg = await self._upload_pdf(input_path)
+                            if upload_success:
+                                self.stats["uploaded_files"] += 1
+                            else:
+                                self.stats["upload_failed_files"] += 1
+                                self.logger.warning(
+                                    "Upload failed for %s: %s",
+                                    input_path.name,
+                                    upload_msg
+                                )
+
                         # Remove the successfully processed PDF if enabled
-                        if self.remove_processed:
+                        # Only remove if upload succeeded or upload is not enabled
+                        should_remove = self.remove_processed and (
+                            not self.upload_enabled or upload_success
+                        )
+                        if should_remove:
                             try:
                                 input_path.unlink()
                                 self.stats["removed_files"] += 1
@@ -249,6 +405,9 @@ class BatchDoclingConverter:
         self.logger.info("Processed: %d", self.stats["processed_files"])
         self.logger.info("Skipped: %d", self.stats["skipped_files"])
         self.logger.info("Failed: %d", self.stats["failed_files"])
+        if self.upload_enabled:
+            self.logger.info("Uploaded: %d", self.stats["uploaded_files"])
+            self.logger.info("Upload failed: %d", self.stats["upload_failed_files"])
         if self.remove_processed:
             self.logger.info("Removed: %d", self.stats["removed_files"])
 
@@ -276,6 +435,16 @@ async def convert_folder(
     remove_processed: bool = True,
     use_gpu: bool = True,
     log_level: int = logging.INFO,
+    table_mode: str = "accurate",
+    images_scale: float = 3.0,
+    do_cell_matching: bool = True,
+    ocr_confidence_threshold: float = 0.05,
+    upload_enabled: bool = False,
+    upload_api_url: Optional[str] = None,
+    upload_api_key: Optional[str] = None,
+    upload_ticker: Optional[str] = None,
+    upload_document_type: str = "FILING",
+    doc_type: str = "both",
 ) -> Dict[str, int]:
     """
     Convert all PDF files in a folder to Markdown.
@@ -288,6 +457,16 @@ async def convert_folder(
         remove_processed: Whether to remove successfully processed PDF files (default: True).
         use_gpu: Whether to use GPU acceleration if available (default: True).
         log_level: Logging level for the converter.
+        table_mode: Table structure recognition mode - "accurate" (default) or "fast".
+        images_scale: Image scaling factor for processing (default: 3.0).
+        do_cell_matching: Enable precise cell matching in tables (default: True).
+        ocr_confidence_threshold: OCR confidence threshold, 0-1 (default: 0.05).
+        upload_enabled: Whether to upload converted PDFs to the API endpoint (default: False).
+        upload_api_url: Base URL for the upload API.
+        upload_api_key: API key for authentication.
+        upload_ticker: Ticker symbol for the uploaded documents.
+        upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
+        doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
 
     Returns:
         Dictionary containing conversion statistics.
@@ -300,6 +479,16 @@ async def convert_folder(
         remove_processed=remove_processed,
         use_gpu=use_gpu,
         log_level=log_level,
+        table_mode=table_mode,
+        images_scale=images_scale,
+        do_cell_matching=do_cell_matching,
+        ocr_confidence_threshold=ocr_confidence_threshold,
+        upload_enabled=upload_enabled,
+        upload_api_url=upload_api_url,
+        upload_api_key=upload_api_key,
+        upload_ticker=upload_ticker,
+        upload_document_type=upload_document_type,
+        doc_type=doc_type,
     )
 
     try:
@@ -347,6 +536,61 @@ def main():
         default="INFO",
         help="Logging level",
     )
+    parser.add_argument(
+        "--table-mode",
+        choices=["accurate", "fast"],
+        default="accurate",
+        help="Table structure recognition mode (default: accurate for highest quality)",
+    )
+    parser.add_argument(
+        "--images-scale",
+        type=float,
+        default=3.0,
+        help="Image scaling factor for processing (default: 3.0, higher = better quality)",
+    )
+    parser.add_argument(
+        "--no-cell-matching",
+        action="store_true",
+        help="Disable precise cell matching in tables (default: enabled for best quality)",
+    )
+    parser.add_argument(
+        "--ocr-confidence",
+        type=float,
+        default=0.05,
+        help="OCR confidence threshold, 0-1 (default: 0.05, lower = more text captured)",
+    )
+    parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="Enable uploading converted PDFs to API endpoint",
+    )
+    parser.add_argument(
+        "--upload-api-url",
+        type=str,
+        help="API base URL for uploads (e.g., http://localhost:8000)",
+    )
+    parser.add_argument(
+        "--upload-api-key",
+        type=str,
+        help="API key for authentication",
+    )
+    parser.add_argument(
+        "--upload-ticker",
+        type=str,
+        help="Ticker symbol for uploaded documents",
+    )
+    parser.add_argument(
+        "--upload-document-type",
+        choices=["FILING", "CALL_TRANSCRIPT"],
+        default="FILING",
+        help="Document type for uploads (default: FILING)",
+    )
+    parser.add_argument(
+        "--doc-type",
+        choices=["filings", "slides", "both"],
+        default="both",
+        help="Type of documents to process: 'filings' (files with 'filing' in name), 'slides' (files with 'slide' in name), or 'both' (all PDFs) (default: both)",
+    )
 
     args = parser.parse_args()
 
@@ -363,6 +607,16 @@ def main():
             remove_processed=not args.keep_processed,
             use_gpu=not args.no_gpu,
             log_level=log_level,
+            table_mode=args.table_mode,
+            images_scale=args.images_scale,
+            do_cell_matching=not args.no_cell_matching,
+            ocr_confidence_threshold=args.ocr_confidence,
+            upload_enabled=args.upload,
+            upload_api_url=args.upload_api_url,
+            upload_api_key=args.upload_api_key,
+            upload_ticker=args.upload_ticker,
+            upload_document_type=args.upload_document_type,
+            doc_type=args.doc_type,
         )
     )
 
@@ -371,6 +625,9 @@ def main():
     print(f"Processed: {stats['processed_files']}")
     print(f"Skipped: {stats['skipped_files']}")
     print(f"Failed: {stats['failed_files']}")
+    if args.upload:
+        print(f"Uploaded: {stats['uploaded_files']}")
+        print(f"Upload failed: {stats['upload_failed_files']}")
     if not args.keep_processed:
         print(f"Removed: {stats['removed_files']}")
 

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: librarian-mcp-proxy
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements-mcp.txt
+    startCommand: python librarian_proxy.py --http
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+    healthCheckPath: /
