@@ -44,3 +44,5 @@ config_test.yaml
 .cache/
 .EasyOCR/
 venv-mcp/
+
+.mypy_cache/

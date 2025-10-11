@@ -344,13 +344,34 @@ class BatchDoclingConverter:
             )
 
             try:
-                markdown = converter.convert_pdf_to_markdown(pdf_file)
+                import time
+                start_time = time.time()
+
+                markdown, document, page_count = converter.convert_pdf(pdf_file)
+
+                processing_time = time.time() - start_time
+
+                # Add metadata header to markdown
+                metadata_header = f"""---
+**Document:** {pdf_file.name}
+**Pages:** {page_count}
+**Processing Time:** {processing_time:.2f} seconds
+**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+---
+
+"""
+                final_markdown = metadata_header + markdown
 
                 # Write the markdown to output file
                 with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(markdown)
+                    f.write(final_markdown)
 
-                self.logger.info("Successfully converted %s", pdf_file.name)
+                self.logger.info(
+                    "Successfully converted %s (%d pages in %.2f seconds)",
+                    pdf_file.name,
+                    page_count,
+                    processing_time
+                )
                 return pdf_file, output_path, True, ""
 
             finally:

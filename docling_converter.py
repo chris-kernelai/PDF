@@ -127,7 +127,7 @@ class DoclingConverter:
 
         return self._converter
 
-    def convert_pdf(self, pdf_source: Union[str, Path]) -> Tuple[str, DoclingDocument]:
+    def convert_pdf(self, pdf_source: Union[str, Path]) -> Tuple[str, DoclingDocument, int]:
         """
         Convert a PDF file to Markdown.
 
@@ -135,7 +135,7 @@ class DoclingConverter:
             pdf_source: Path to the PDF file to convert.
 
         Returns:
-            Tuple containing the markdown content and the DoclingDocument object.
+            Tuple containing the markdown content, the DoclingDocument object, and page count.
 
         Raises:
             FileNotFoundError: If the PDF file doesn't exist.
@@ -154,17 +154,19 @@ class DoclingConverter:
             doc = converter.convert(pdf_path)
             document = doc.document
 
-            if self.add_page_numbers:
-                result_markdown = ""
-                pages = list(document.pages)
-                for i in range(len(pages)):
-                    result_markdown += f"Page {i + 1}\n"
-                    result_markdown += document.export_to_markdown(page_no=i)
-                    result_markdown += f"\n\n<----PAGE {i + 1}---->\n\n"
-            else:
-                result_markdown = document.export_to_markdown()
+            pages = list(document.pages)
+            page_count = len(pages)
 
-            return result_markdown, document
+            # Always add page markers
+            result_markdown = ""
+            for i in range(page_count):
+                if self.add_page_numbers:
+                    result_markdown += f"Page {i + 1}\n"
+                result_markdown += document.export_to_markdown(page_no=i)
+                if i < page_count - 1:  # Don't add marker after last page
+                    result_markdown += f"\n\n<!-- PAGE {i + 1} -->\n\n"
+
+            return result_markdown, document, page_count
 
         except (FileNotFoundError, ValueError) as e:
             raise e
@@ -181,7 +183,7 @@ class DoclingConverter:
         Returns:
             The markdown content as a string.
         """
-        result_markdown, _ = self.convert_pdf(pdf_source)
+        result_markdown, _, _ = self.convert_pdf(pdf_source)
         return result_markdown
 
     def cleanup(self):
