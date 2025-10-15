@@ -109,6 +109,7 @@ class DoclingConverter:
                 "images_scale": self.images_scale,
                 "do_table_structure": True,  # Enable table structure recognition
                 "do_ocr": True,  # Enable OCR
+                "generate_picture_images": True,  # Enable picture image extraction
             }
 
             # Only set artifacts_path if explicitly provided
@@ -126,6 +127,61 @@ class DoclingConverter:
             )
 
         return self._converter
+
+    def extract_images(
+        self,
+        document: DoclingDocument,
+        output_dir: Path,
+        doc_id: str
+    ) -> int:
+        """
+        Extract images from a DoclingDocument and save them to disk.
+
+        Args:
+            document: The DoclingDocument to extract images from.
+            output_dir: Directory to save extracted images.
+            doc_id: Document ID for organizing images.
+
+        Returns:
+            Number of images extracted.
+        """
+        # Create output directory for this document
+        doc_output_dir = output_dir / doc_id
+        doc_output_dir.mkdir(parents=True, exist_ok=True)
+
+        image_count = 0
+
+        # Iterate through all pictures in the document
+        pictures = list(document.pictures)
+
+        for picture in pictures:
+            try:
+                # Get page number from provenance
+                if hasattr(picture, 'prov') and picture.prov:
+                    page_num = picture.prov[0].page_no
+                else:
+                    continue
+
+                # Get image data using get_image method
+                pil_image = picture.get_image(document)
+
+                if pil_image is None:
+                    continue
+
+                # Image index for this document
+                img_idx = image_count + 1
+
+                # Save image
+                image_filename = f"page_{page_num:03d}_img_{img_idx:02d}.png"
+                image_path = doc_output_dir / image_filename
+                pil_image.save(image_path, "PNG")
+
+                image_count += 1
+
+            except Exception:
+                continue
+
+        return image_count
 
     def convert_pdf(self, pdf_source: Union[str, Path]) -> Tuple[str, DoclingDocument, int]:
         """

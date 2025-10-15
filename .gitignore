@@ -46,3 +46,10 @@ config_test.yaml
 venv-mcp/
 
 .mypy_cache/
+
+*.pdf
+*.png
+*.jpg
+*.md
+*.json
+*.txt

@@ -7,6 +7,7 @@ to Markdown using Docling. It processes files asynchronously in configurable bat
 
 import asyncio
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -16,6 +17,35 @@ from datetime import datetime
 import httpx
 
 from docling_converter import DoclingConverter
+from processing_logger import ProcessingLogger
+
+
+def clean_repeating_characters(text: str) -> str:
+    """
+    Clean excessive repeating characters in markdown text.
+
+    Rules:
+    - Limit consecutive spaces to max 9 (keep below 10)
+    - Limit any other repeating character to max 49 (keep below 50)
+
+    Args:
+        text: Input markdown text
+
+    Returns:
+        Cleaned markdown text
+    """
+    # Replace 10 or more consecutive spaces with 9 spaces
+    text = re.sub(r' {10,}', ' ' * 9, text)
+
+    # Replace 50+ consecutive occurrences of any other character with 49 occurrences
+    # Match any character (except space which we already handled) repeated 50+ times
+    def replace_long_repeats(match):
+        char = match.group(1)
+        return char * 49
+
+    text = re.sub(r'([^\s])\1{49,}', replace_long_repeats, text)
+
+    return text
 
 
 class BatchDoclingConverter:
@@ -46,6 +76,7 @@ class BatchDoclingConverter:
         upload_ticker: Optional[str] = None,
         upload_document_type: str = "FILING",
         doc_type: str = "both",
+        extract_images: bool = False,
     ):
         """
         Initialize the batch converter.
@@ -69,6 +100,7 @@ class BatchDoclingConverter:
             upload_ticker: Ticker symbol for the uploaded documents.
             upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
             doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
+            extract_images: Whether to extract and save images from PDFs (default: False).
         """
         self.input_folder = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -92,6 +124,9 @@ class BatchDoclingConverter:
 
         # Document type filter
         self.doc_type = doc_type.lower()
+
+        # Image extraction
+        self.extract_images = extract_images
 
         # Processed documents tracker
         self.processed_tracker_file = Path("processed_documents.txt")
@@ -117,7 +152,11 @@ class BatchDoclingConverter:
             "uploaded_files": 0,
             "upload_failed_files": 0,
             "skipped_already_processed": 0,
+            "total_images_extracted": 0,
         }
+
+        # Initialize processing logger
+        self.proc_logger = ProcessingLogger()
 
     def _load_processed_documents(self) -> set:
         """
@@ -306,7 +345,7 @@ class BatchDoclingConverter:
             self.logger.error("Failed to upload %s: %s", pdf_file.name, error_msg)
             return False, error_msg
 
-    async def _convert_single_file(self, pdf_file: Path) -> Tuple[Path, Path, bool, str]:
+    async def _convert_single_file(self, pdf_file: Path) -> Tuple[Path, Path, bool, str, int]:
         """
         Convert a single PDF file to Markdown.
 
@@ -314,19 +353,19 @@ class BatchDoclingConverter:
             pdf_file: Path to the PDF file to convert.
 
         Returns:
-            Tuple of (input_path, output_path, success, error_message)
+            Tuple of (input_path, output_path, success, error_message, image_count)
         """
         output_path = self._get_output_path(pdf_file)
 
         # Check if already processed
         if self._is_already_processed(pdf_file):
             self.logger.info("Skipping %s - already processed", pdf_file.name)
-            return pdf_file, output_path, True, "Skipped - already processed"
+            return pdf_file, output_path, True, "Skipped - already processed", 0
 
         # Skip if output file already exists
         if output_path.exists():
             self.logger.info("Skipping %s - output already exists", pdf_file.name)
-            return pdf_file, output_path, True, "Skipped - output already exists"
+            return pdf_file, output_path, True, "Skipped - output already exists", 0
 
         try:
             # Create output directory if it doesn't exist
@@ -351,28 +390,64 @@ class BatchDoclingConverter:
 
                 processing_time = time.time() - start_time
 
+                # Extract images (always enabled now)
+                image_count = 0
+                # Extract document ID from filename
+                doc_id = self._extract_doc_id_from_filename(pdf_file)
+                if doc_id is None:
+                    doc_id = pdf_file.stem
+
+                # Create images directory in easy-to-find location
+                images_output_dir = Path('images')
+                image_count = converter.extract_images(document, images_output_dir, doc_id)
+                self.logger.info("  Extracted %d images to images/%s/", image_count, doc_id)
+
                 # Add metadata header to markdown
                 metadata_header = f"""---
 **Document:** {pdf_file.name}
 **Pages:** {page_count}
+**Images Extracted:** {image_count}
+**Images Location:** images/{doc_id}/
 **Processing Time:** {processing_time:.2f} seconds
 **Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ---
 
 """
-                final_markdown = metadata_header + markdown
+                raw_markdown = metadata_header + markdown
 
-                # Write the markdown to output file
+                # Clean repeating characters
+                cleaned_markdown = clean_repeating_characters(raw_markdown)
+
+                # Save raw version to processed_raw/
+                # Use proper path operations instead of string replace
+                raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
+                raw_output_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(raw_output_path, "w", encoding="utf-8") as f:
+                    f.write(raw_markdown)
+
+                # Save cleaned version to processed/ (default)
                 with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(final_markdown)
+                    f.write(cleaned_markdown)
 
                 self.logger.info(
-                    "Successfully converted %s (%d pages in %.2f seconds)",
+                    "Successfully converted %s (%d pages, %d images in %.2f seconds)",
                     pdf_file.name,
                     page_count,
+                    image_count,
                     processing_time
                 )
-                return pdf_file, output_path, True, ""
+
+                # Log conversion to processing log
+                # Extract doc_id from filename for logging
+                doc_id = pdf_file.stem  # Use full stem as doc_id
+                self.proc_logger.log_conversion(
+                    doc_id=doc_id,
+                    pages=page_count,
+                    duration_seconds=processing_time,
+                    status="success"
+                )
+
+                return pdf_file, output_path, True, "", image_count
 
             finally:
                 converter.cleanup()
@@ -380,11 +455,11 @@ class BatchDoclingConverter:
         except (FileNotFoundError, ValueError, OSError) as e:
             error_msg = f"Failed to convert {pdf_file.name}: {str(e)}"
             self.logger.error("%s", error_msg)
-            return pdf_file, output_path, False, error_msg
+            return pdf_file, output_path, False, error_msg, 0
 
     async def _process_batch(
         self, pdf_files: List[Path]
-    ) -> List[Tuple[Path, Path, bool, str]]:
+    ) -> List[Tuple[Path, Path, bool, str, int]]:
         """
         Process a batch of PDF files concurrently.
 
@@ -392,13 +467,13 @@ class BatchDoclingConverter:
             pdf_files: List of PDF files to process.
 
         Returns:
-            List of tuples containing (input_path, output_path, success, error_message) for each file.
+            List of tuples containing (input_path, output_path, success, error_message, image_count) for each file.
         """
         tasks = [self._convert_single_file(pdf_file) for pdf_file in pdf_files]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Handle any exceptions that occurred
-        processed_results: List[Tuple[Path, Path, bool, str]] = []
+        processed_results: List[Tuple[Path, Path, bool, str, int]] = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 error_msg = f"Task failed with exception: {str(result)}"
@@ -406,9 +481,9 @@ class BatchDoclingConverter:
                     "Batch processing error for %s: %s", pdf_files[i].name, error_msg
                 )
                 processed_results.append(
-                    (pdf_files[i], self._get_output_path(pdf_files[i]), False, error_msg)
+                    (pdf_files[i], self._get_output_path(pdf_files[i]), False, error_msg, 0)
                 )
-            elif isinstance(result, tuple) and len(result) == 4:
+            elif isinstance(result, tuple) and len(result) == 5:
                 processed_results.append(result)
             else:
                 # Handle unexpected result type
@@ -417,7 +492,7 @@ class BatchDoclingConverter:
                     "Unexpected result for %s: %s", pdf_files[i].name, error_msg
                 )
                 processed_results.append(
-                    (pdf_files[i], self._get_output_path(pdf_files[i]), False, error_msg)
+                    (pdf_files[i], self._get_output_path(pdf_files[i]), False, error_msg, 0)
                 )
 
         return processed_results
@@ -462,7 +537,10 @@ class BatchDoclingConverter:
             results = await self._process_batch(batch)
 
             # Update statistics, upload files, and remove successfully processed files
-            for input_path, _output_path, success, error_msg in results:
+            for input_path, _output_path, success, error_msg, image_count in results:
+                # Track image count
+                if success and image_count > 0:
+                    self.stats["total_images_extracted"] += image_count
                 if success:
                     if "Skipped - already processed" in error_msg:
                         self.stats["skipped_already_processed"] += 1
@@ -487,19 +565,25 @@ class BatchDoclingConverter:
                                     upload_msg
                                 )
 
-                        # Remove the successfully processed PDF if enabled
-                        # Only remove if upload succeeded or upload is not enabled
-                        should_remove = self.remove_processed and (
+                        # Move the successfully processed PDF to pdfs_processed folder
+                        # Only move if upload succeeded or upload is not enabled
+                        should_move = self.remove_processed and (
                             not self.upload_enabled or upload_success
                         )
-                        if should_remove:
+                        if should_move:
                             try:
-                                input_path.unlink()
+                                # Create pdfs_processed directory
+                                processed_pdf_dir = Path("pdfs_processed")
+                                processed_pdf_dir.mkdir(exist_ok=True)
+
+                                # Move the PDF
+                                dest_path = processed_pdf_dir / input_path.name
+                                input_path.rename(dest_path)
                                 self.stats["removed_files"] += 1
-                                self.logger.info("Removed processed file: %s", input_path.name)
+                                self.logger.info("Moved processed file to: %s", dest_path)
                             except OSError as e:
                                 self.logger.warning(
-                                    "Failed to remove processed file %s: %s",
+                                    "Failed to move processed file %s: %s",
                                     input_path.name,
                                     e
                                 )
@@ -513,11 +597,12 @@ class BatchDoclingConverter:
         self.logger.info("Skipped (already processed): %d", self.stats["skipped_already_processed"])
         self.logger.info("Skipped (output exists): %d", self.stats["skipped_files"])
         self.logger.info("Failed: %d", self.stats["failed_files"])
+        self.logger.info("Total images extracted: %d", self.stats["total_images_extracted"])
         if self.upload_enabled:
             self.logger.info("Uploaded: %d", self.stats["uploaded_files"])
             self.logger.info("Upload failed: %d", self.stats["upload_failed_files"])
         if self.remove_processed:
-            self.logger.info("Removed: %d", self.stats["removed_files"])
+            self.logger.info("Moved to pdfs_processed/: %d", self.stats["removed_files"])
 
         return self.stats
 
@@ -553,6 +638,7 @@ async def convert_folder(
     upload_ticker: Optional[str] = None,
     upload_document_type: str = "FILING",
     doc_type: str = "both",
+    extract_images: bool = False,
 ) -> Dict[str, int]:
     """
     Convert all PDF files in a folder to Markdown.
@@ -575,6 +661,7 @@ async def convert_folder(
         upload_ticker: Ticker symbol for the uploaded documents.
         upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
         doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
+        extract_images: Whether to extract and save images from PDFs (default: False).
 
     Returns:
         Dictionary containing conversion statistics.
@@ -597,6 +684,7 @@ async def convert_folder(
         upload_ticker=upload_ticker,
         upload_document_type=upload_document_type,
         doc_type=doc_type,
+        extract_images=extract_images,
     )
 
     try:
@@ -699,6 +787,11 @@ def main():
         default="both",
         help="Type of documents to process: 'filings' (files with 'filing' in name), 'slides' (files with 'slide' in name), or 'both' (all PDFs) (default: both)",
     )
+    parser.add_argument(
+        "--extract-images",
+        action="store_true",
+        help="Extract and save images from PDFs to processed_images/ folder",
+    )
 
     args = parser.parse_args()
 
@@ -725,6 +818,7 @@ def main():
             upload_ticker=args.upload_ticker,
             upload_document_type=args.upload_document_type,
             doc_type=args.doc_type,
+            extract_images=args.extract_images,
         )
     )
 
@@ -733,11 +827,13 @@ def main():
     print(f"Processed: {stats['processed_files']}")
     print(f"Skipped: {stats['skipped_files']}")
     print(f"Failed: {stats['failed_files']}")
+    print(f"Total images extracted: {stats['total_images_extracted']}")
+    print(f"Images saved to: images/")
     if args.upload:
         print(f"Uploaded: {stats['uploaded_files']}")
         print(f"Upload failed: {stats['upload_failed_files']}")
     if not args.keep_processed:
-        print(f"Removed: {stats['removed_files']}")
+        print(f"Moved to pdfs_processed/: {stats['removed_files']}")
 
 
 if __name__ == "__main__":
