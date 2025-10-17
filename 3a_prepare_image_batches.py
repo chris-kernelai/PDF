@@ -149,30 +149,20 @@ Do not interpret or analyze. State only what is directly visible. Be concise."""
         }
     ]
 
-    # Build request
-    request = {
-        "contents": contents,
-    }
-
-    # Add system instruction if provided
-    if system_instruction:
-        request["system_instruction"] = {"parts": [{"text": system_instruction}]}
-
-    # Format for Developer vs Vertex mode
-    if mode == "developer":
-        batch_request = {
-            "key": request_key,
-            "request": request
-        }
-    else:  # vertex
-        batch_request = {
-            "custom_id": request_key,
-            "request": {
-                "contents": contents,
+    # Build request (same format for both developer and vertex)
+    batch_request = {
+        "key": request_key,
+        "request": {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.0
             }
         }
-        if system_instruction:
-            batch_request["request"]["system_instruction"] = {"parts": [{"text": system_instruction}]}
+    }
+
+    # Add system instruction if provided (at request level, not inside contents)
+    if system_instruction:
+        batch_request["request"]["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
     return batch_request
 
@@ -364,8 +354,10 @@ def main():
     )
     parser.add_argument(
         "mode",
+        nargs="?",
+        default="vertex",
         choices=["developer", "vertex"],
-        help="API mode: 'developer' for Gemini Developer API or 'vertex' for Vertex AI",
+        help="API mode: 'vertex' (default) for Vertex AI or 'developer' for Gemini Developer API",
     )
     parser.add_argument(
         "--images-folder",

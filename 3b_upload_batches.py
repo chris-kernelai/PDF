@@ -128,8 +128,10 @@ def main():
     parser = argparse.ArgumentParser(description="Upload batch files to Gemini and create batch jobs")
     parser.add_argument(
         "mode",
+        nargs="?",
+        default="vertex",
         choices=["developer", "vertex"],
-        help="API mode: 'developer' for Gemini Developer API or 'vertex' for Vertex AI",
+        help="API mode: 'vertex' (default) for Vertex AI or 'developer' for Gemini Developer API",
     )
     parser.add_argument(
         "--batch-prefix",
@@ -172,14 +174,12 @@ def main():
     gcs_input_prefix = os.environ.get("GCS_INPUT_PREFIX", "gemini_batches/input")
     gcs_output_prefix = os.environ.get("GCS_OUTPUT_PREFIX", "gemini_batches/output")
 
-    # Use Gemini 2.0 Flash for both modes (cheaper and now GA)
+    # Use Gemini 2.0 Flash stable version for both modes
     if mode == "developer":
-        model = os.environ.get("GEMINI_MODEL", "models/gemini-2.0-flash")
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
     else:  # vertex
-        model = os.environ.get(
-            "GEMINI_MODEL",
-            f"projects/{os.environ['GCP_PROJECT']}/locations/{os.environ['GCP_LOCATION']}/publishers/google/models/gemini-2.0-flash",
-        )
+        # For Vertex AI batch, use stable 2.0-flash-001
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
 
     batch_jobs = []
     processed_files = []

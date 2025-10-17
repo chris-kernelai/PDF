@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-gemini_batch_uploader.py
+4b_upload_filter_batches.py
 
-Step 2: Uploads batch files to Gemini and creates batch jobs
-- Supports both Developer API (via api_key) and Vertex AI (via GCP project/location)
-- Uploads JSONL file (to Files API in Developer mode, or to GCS in Vertex mode)
-- Creates batch job
-- Returns job ID for monitoring
+Step 2: Upload filter batch files to Gemini and create batch jobs.
 
 Usage:
-    python gemini_batch_uploader.py developer
-    python gemini_batch_uploader.py vertex
-    python gemini_batch_uploader.py developer --batch-prefix image_description_batches
+    python 4b_upload_filter_batches.py
+    python 4b_upload_filter_batches.py developer
 """
 
 import argparse
@@ -27,40 +22,8 @@ from google import genai
 from google.cloud import storage
 from google.genai.types import CreateBatchJobConfig
 
-# -------------------------------------------------------------------
 # Load environment
-# -------------------------------------------------------------------
 load_dotenv()
-
-
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
-
-def validate_jsonl_file(file_path):
-    """Validate that the JSONL file is properly formatted"""
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if "key" not in data or "request" not in data:
-                        print(f"❌ Invalid JSONL format at line {line_num}: missing 'key' or 'request'")
-                        return False
-                    if "contents" not in data["request"]:
-                        print(f"❌ Invalid JSONL format at line {line_num}: missing 'contents' in request")
-                        return False
-                except json.JSONDecodeError as e:
-                    print(f"❌ JSON decode error at line {line_num}: {e}")
-                    return False
-        return True
-    except Exception as e:
-        print(f"❌ Error validating file: {e}")
-        return False
 
 
 def init_client(mode):
@@ -80,7 +43,7 @@ def init_client(mode):
             location=os.environ["GCP_LOCATION"],
         )
     else:
-        raise RuntimeError(f"❌ Invalid mode: {mode}. Use 'developer' or 'vertex'")
+        raise RuntimeError(f"❌ Invalid mode: {mode}")
 
 
 def upload_file_developer(client, local_path):
@@ -119,26 +82,23 @@ def create_batch_job(client, mode, model, src_uri, gcs_output_uri=None):
     return job.name
 
 
-# -------------------------------------------------------------------
-# Main
-# -------------------------------------------------------------------
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Upload batch files to Gemini and create batch jobs")
+    parser = argparse.ArgumentParser(description="Upload filter batch files to Gemini")
     parser.add_argument(
         "mode",
+        nargs="?",
+        default="vertex",
         choices=["developer", "vertex"],
-        help="API mode: 'developer' for Gemini Developer API or 'vertex' for Vertex AI",
+        help="API mode: 'vertex' (default) or 'developer'",
     )
     parser.add_argument(
         "--batch-prefix",
-        default="image_description_batches",
-        help="Batch folder prefix (default: image_description_batches)",
+        default="filter_batches",
+        help="Batch folder prefix (default: filter_batches)",
     )
     args = parser.parse_args()
 
-    print("🚀 Gemini Batch Uploader")
+    print("🚀 Filter Batch Uploader")
     print("=" * 40)
     print(f"📁 Using batch prefix: {args.batch_prefix}")
 
@@ -156,40 +116,34 @@ def main():
         print(f"❌ Batch folder not found: {batch_folder}")
         return False
 
-    # Look for image description batch files
-    batch_files = glob.glob(f"{batch_folder}/image_description_batch_*_imgs_*.jsonl")
+    # Look for filter batch files
+    batch_files = glob.glob(f"{batch_folder}/filter_batch_*_reqs_*.jsonl")
 
     if not batch_files:
         print(f"❌ No batch files found in {batch_folder}")
         print("   Looking for pattern:")
-        print(f"   - {batch_folder}/image_description_batch_*_imgs_*.jsonl")
+        print(f"   - {batch_folder}/filter_batch_*_reqs_*.jsonl")
         return False
 
     print(f"📄 Found {len(batch_files)} batch files")
 
     # Config for Vertex
     bucket_name = os.environ.get("GCS_BUCKET")
-    gcs_input_prefix = os.environ.get("GCS_INPUT_PREFIX", "gemini_batches/input")
-    gcs_output_prefix = os.environ.get("GCS_OUTPUT_PREFIX", "gemini_batches/output")
+    gcs_input_prefix = os.environ.get("GCS_INPUT_PREFIX", "gemini_batches/filter_input")
+    gcs_output_prefix = os.environ.get("GCS_OUTPUT_PREFIX", "gemini_batches/filter_output")
 
-    # Use Gemini 2.0 Flash for both modes (cheaper and now GA)
+    # Use Gemini Flash 2.0 for both modes
     if mode == "developer":
-        model = os.environ.get("GEMINI_MODEL", "models/gemini-2.0-flash")
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
     else:  # vertex
-        model = os.environ.get(
-            "GEMINI_MODEL",
-            f"projects/{os.environ['GCP_PROJECT']}/locations/{os.environ['GCP_LOCATION']}/publishers/google/models/gemini-2.0-flash",
-        )
+        # For Vertex AI batch, use stable 2.0-flash-001 (faster and better than 1.5)
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
 
     batch_jobs = []
     processed_files = []
 
     for i, batch_file in enumerate(batch_files, 1):
         print(f"\n📤 Processing {i}/{len(batch_files)}: {os.path.basename(batch_file)}")
-
-        if not validate_jsonl_file(batch_file):
-            print(f"❌ Skipping invalid file: {batch_file}")
-            continue
 
         try:
             if mode == "developer":
@@ -214,14 +168,13 @@ def main():
             print(f"   ✅ Job created: {job_name}")
         except Exception as e:
             import traceback
-
             print(f"❌ Error creating job for {batch_file}: {e}")
             print(traceback.format_exc())
             continue
 
     # Save tracking info
     if processed_files:
-        tracking_file = os.path.join(batch_folder, "batch_jobs_tracking.json")
+        tracking_file = os.path.join(batch_folder, "filter_jobs_tracking.json")
         with open(tracking_file, "w") as f:
             json.dump(processed_files, f, indent=2)
         print(f"\n📝 Job tracking saved to: {tracking_file}")
@@ -230,6 +183,8 @@ def main():
         print(f"\n✅ SUCCESS! Created {len(batch_jobs)} batch jobs:")
         for i, job in enumerate(batch_jobs, 1):
             print(f"   {i}. {job}")
+        print(f"\nNext step:")
+        print(f"  python 4c_monitor_filter_batches.py")
         return True
     else:
         print("\n❌ FAILED! No jobs created")

@@ -9,6 +9,7 @@
 #   ./aws_helper.sh upload <file>        # Upload file to to_process/
 #   ./aws_helper.sh upload-dir <dir>     # Upload directory of PDFs
 #   ./aws_helper.sh download             # Download processed results
+#   ./aws_helper.sh download-code        # Download code from AWS (with backup)
 #   ./aws_helper.sh run                  # Run pipeline on instance
 #   ./aws_helper.sh logs                 # View processing logs
 #   ./aws_helper.sh sync-code            # Sync code changes to instance
