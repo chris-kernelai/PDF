@@ -125,6 +125,35 @@ case "$1" in
         echo -e "${GREEN}✅ Code synced${NC}"
         ;;
 
+    download-code)
+        echo -e "${BLUE}Downloading code from instance...${NC}"
+
+        # Create backup directory with timestamp
+        BACKUP_DIR="./code_backup_$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$BACKUP_DIR"
+
+        echo "Backing up current local code to $BACKUP_DIR..."
+        cp *.py "$BACKUP_DIR/" 2>/dev/null || true
+        cp *.sh "$BACKUP_DIR/" 2>/dev/null || true
+
+        # Download Python scripts
+        echo "Downloading Python scripts..."
+        scp -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/*.py" ./ 2>/dev/null || echo "No Python files to download"
+
+        # Download shell scripts (excluding aws_helper.sh to avoid overwriting this script)
+        echo "Downloading shell scripts..."
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd ${REMOTE_DIR} && ls *.sh 2>/dev/null | grep -v aws_helper.sh" | while read script; do
+            echo "  Downloading $script..."
+            scp -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/$script" ./ 2>/dev/null
+        done
+
+        # Make shell scripts executable
+        chmod +x *.sh 2>/dev/null || true
+
+        echo -e "${GREEN}✅ Code downloaded from AWS (excluding aws_helper.sh)${NC}"
+        echo -e "${YELLOW}ℹ️  Local backup saved to: $BACKUP_DIR${NC}"
+        ;;
+
     status)
         echo -e "${BLUE}Checking instance status...${NC}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
@@ -171,6 +200,7 @@ ENDSSH
         echo "  upload <file>        Upload PDF to to_process/"
         echo "  upload-dir <dir>     Upload all PDFs from directory"
         echo "  download             Download results to ./aws_results/"
+        echo "  download-code        Download code from AWS (excludes aws_helper.sh)"
         echo "  run                  Run full pipeline on instance"
         echo "  run-md-only          Run pipeline (stop after markdown)"
         echo "  logs                 View processing logs"
@@ -183,6 +213,7 @@ ENDSSH
         echo "  $0 upload-dir ./pdfs/"
         echo "  $0 run"
         echo "  $0 download"
+        echo "  $0 download-code"
         exit 1
         ;;
 esac

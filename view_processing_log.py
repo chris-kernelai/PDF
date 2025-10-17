@@ -281,12 +281,14 @@ class ProcessingLogViewer:
         print("\n" + "=" * 80)
         print("📈 SUMMARY STATISTICS")
         print("=" * 80)
+        print(f"Total PDFs Processed:  {conversion_doc_count}")
+        print(f"Total Pages:           {total_pages:,}")
+        print()
         print(f"Documents:        {total_docs} total")
         print(f"  ✅ Completed:   {completed_docs}")
         print(f"  🔄 In Progress: {in_progress_docs}")
         print(f"  ⏸️  Not Started: {not_started_docs}")
         print()
-        print(f"Pages Processed:  {total_pages:,}")
         print(f"Images Extracted: {total_images_extracted:,}")
         print(f"Images Filtered:  {total_images_filtered:,}")
         print(f"Images Integrated: {total_images_integrated:,}")
@@ -295,14 +297,19 @@ class ProcessingLogViewer:
         # Show conversion time stats (the main processing bottleneck)
         if conversion_doc_count > 0:
             avg_conversion_time = total_conversion_time / conversion_doc_count
-            print(f"PDF Conversion Stats:")
+            pages_per_second = total_pages / total_conversion_time if total_conversion_time > 0 else 0
+            pages_per_minute = pages_per_second * 60
+
+            print(f"PDF Conversion Performance:")
             print(f"  Documents converted: {conversion_doc_count}")
             mins = int(total_conversion_time / 60)
             secs = int(total_conversion_time % 60)
             print(f"  Total time:          {mins}m {secs}s ({total_conversion_time:.1f}s)")
             print(f"  Average/doc:         {avg_conversion_time:.1f}s")
             if total_pages > 0:
-                print(f"  Average/page:        {total_conversion_time/total_pages:.1f}s")
+                print(f"  Average/page:        {total_conversion_time/total_pages:.2f}s")
+            print(f"  Pages/second:        {pages_per_second:.2f}")
+            print(f"  Pages/minute:        {pages_per_minute:.2f}")
             print()
 
         # Show overall time

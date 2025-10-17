@@ -24,7 +24,7 @@ load_dotenv()
 class DocumentFetcher:
     """Fetches documents from the Librarian API."""
 
-    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42):
+    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42, max_doc_id: Optional[int] = None):
         """
         Initialize document fetcher.
 
@@ -33,6 +33,7 @@ class DocumentFetcher:
             limit: Maximum number of documents to fetch (None = no limit).
             randomize: Whether to randomize document order for sampling.
             random_seed: Random seed for reproducible sampling (default: 42).
+            max_doc_id: Maximum document ID to fetch (filter out documents with ID > this value).
         """
         self.config = self._load_config(config_path)
         self._setup_logging()
@@ -55,6 +56,10 @@ class DocumentFetcher:
         self.limit = limit
         self.randomize = randomize
         self.random_seed = random_seed
+        self.max_doc_id = max_doc_id
+
+        if self.max_doc_id:
+            self.logger.info(f"Will filter out documents with ID > {self.max_doc_id}")
 
         if self.randomize:
             random.seed(self.random_seed)
@@ -525,6 +530,14 @@ class DocumentFetcher:
                 self.logger.warning("No documents found")
                 return
 
+            # Filter by max_doc_id if specified
+            if self.max_doc_id:
+                original_count = len(documents)
+                documents = [d for d in documents if d.get("id", 0) <= self.max_doc_id]
+                filtered_count = original_count - len(documents)
+                if filtered_count > 0:
+                    self.logger.info(f"Filtered out {filtered_count} documents with ID > {self.max_doc_id}")
+
             # Randomize document order if requested (for diverse sampling)
             if self.randomize:
                 self.logger.info(f"Randomizing {len(documents)} documents with seed {self.random_seed}")
@@ -615,6 +628,11 @@ async def main():
         default=42,
         help="Random seed for reproducible sampling (default: 42)",
     )
+    parser.add_argument(
+        "--max-doc-id",
+        type=int,
+        help="Maximum document ID to fetch (filter out documents with ID > this value)",
+    )
 
     args = parser.parse_args()
 
@@ -622,7 +640,8 @@ async def main():
         args.config,
         limit=args.limit,
         randomize=args.randomize,
-        random_seed=args.random_seed
+        random_seed=args.random_seed,
+        max_doc_id=args.max_doc_id
     )
 
     if args.stats:

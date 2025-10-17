@@ -84,6 +84,7 @@ def _process_single_pdf_worker(
     """
     import time
     import os
+    import subprocess
     from pathlib import Path
 
     # Force CPU if use_gpu is False by hiding GPUs from this process
@@ -91,6 +92,34 @@ def _process_single_pdf_worker(
         os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     pdf_file = Path(pdf_file_path)
+
+    # Check if file is actually a PDF using the `file` command
+    try:
+        result = subprocess.run(
+            ['file', '--mime-type', '-b', str(pdf_file)],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5
+        )
+        mime_type = result.stdout.strip()
+
+        # Skip text files - they're not real PDFs
+        if mime_type.startswith('text/'):
+            error_msg = f"Skipping {pdf_file.name} - detected as text file, not a PDF"
+            return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
+
+        # Skip non-PDF files
+        if not mime_type.startswith('application/pdf'):
+            error_msg = f"Skipping {pdf_file.name} - not a PDF (detected as {mime_type})"
+            return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
+
+    except subprocess.TimeoutExpired:
+        error_msg = f"Timeout detecting file type for {pdf_file.name}"
+        return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
+    except Exception as e:
+        # If file type detection fails, try to proceed as PDF anyway
+        pass
 
     try:
         # Create converter instance for this process
@@ -560,6 +589,16 @@ class BatchDoclingConverter:
 
                 if output_path.exists():
                     self.logger.info("Skipping %s - output already exists", pdf_file.name)
+                    # Move the PDF to pdfs_processed even though we skipped it
+                    if self.remove_processed and pdf_file.exists():
+                        try:
+                            processed_pdf_dir = Path("pdfs_processed")
+                            processed_pdf_dir.mkdir(exist_ok=True)
+                            dest_path = processed_pdf_dir / pdf_file.name
+                            pdf_file.rename(dest_path)
+                            self.logger.info("Moved skipped file to: %s", dest_path)
+                        except OSError as e:
+                            self.logger.warning("Failed to move skipped file %s: %s", pdf_file.name, e)
                     results.append((pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0))
                     continue
 
