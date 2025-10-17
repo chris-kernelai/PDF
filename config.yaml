@@ -75,15 +75,19 @@ paths:
   output_folder: "processed"
   metadata_db: "to_process/metadata.db"
 
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "fetch_documents.log"
+
 # Processing settings
 processing:
   # Number of PDFs to convert concurrently (uses ProcessPoolExecutor)
   # Set based on your CPU/GPU cores. 4-8 is typical for multi-core systems.
-  batch_size: 2
+  batch_size: 3
 
   # Whether to use GPU acceleration (if available)
   use_gpu: true
-
   # Table extraction mode: "accurate" (slower, better) or "fast"
   table_mode: "accurate"
 
