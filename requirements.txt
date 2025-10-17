@@ -1,3 +1,13 @@
+# Document fetching dependencies
+aiohttp>=3.9.0
+aiofiles>=23.0.0
+pyyaml>=6.0
+
+# PDF processing dependencies
+docling>=2.0.0
+google-generativeai>=0.8.0
+
+# Existing dependencies
 airtop==0.0.49
 annotated-types==0.7.0
 anyio==4.10.0

@@ -59,13 +59,19 @@ class PipelineRunner:
             self.logger.warning("No documents to convert")
             return
 
-        # Run batch converter
+        # Run batch converter with config settings
+        processing_config = self.config.get("processing", {})
         converter = BatchDoclingConverter(
             input_folder=self.config["paths"]["input_folder"],
             output_folder=self.config["paths"]["output_folder"],
-            batch_size=1,  # Default to 1 as requested
-            remove_processed=True,  # Remove PDFs after successful conversion
+            batch_size=processing_config.get("batch_size", 4),
+            remove_processed=True,
             log_level=logging.INFO,
+            use_gpu=processing_config.get("use_gpu", True),
+            table_mode=processing_config.get("table_mode", "accurate"),
+            images_scale=processing_config.get("images_scale", 3.0),
+            do_cell_matching=processing_config.get("do_cell_matching", True),
+            ocr_confidence_threshold=processing_config.get("ocr_confidence_threshold", 0.05),
         )
 
         try:
@@ -148,12 +154,18 @@ class PipelineRunner:
         """Only convert existing PDFs without fetching new ones."""
         self.logger.info("Running convert-only mode...")
 
+        processing_config = self.config.get("processing", {})
         converter = BatchDoclingConverter(
             input_folder=self.config["paths"]["input_folder"],
             output_folder=self.config["paths"]["output_folder"],
-            batch_size=1,
+            batch_size=processing_config.get("batch_size", 4),
             remove_processed=True,
             log_level=logging.INFO,
+            use_gpu=processing_config.get("use_gpu", True),
+            table_mode=processing_config.get("table_mode", "accurate"),
+            images_scale=processing_config.get("images_scale", 3.0),
+            do_cell_matching=processing_config.get("do_cell_matching", True),
+            ocr_confidence_threshold=processing_config.get("ocr_confidence_threshold", 0.05),
         )
 
         try:
@@ -232,14 +244,18 @@ class PipelineRunner:
 
         # Step 3: Convert PDFs to markdown
         self.logger.info(f"\n[Step 3/3] Converting {downloaded_count} PDFs to Markdown...")
+        processing_config = self.config.get("processing", {})
         converter = BatchDoclingConverter(
             input_folder=self.config["paths"]["input_folder"],
             output_folder=self.config["paths"]["output_folder"],
-            batch_size=1,
+            batch_size=processing_config.get("batch_size", 4),
             remove_processed=True,
             log_level=logging.INFO,
-            use_gpu=False,  # Use CPU for test batch
-            # Maximum quality defaults will be used automatically
+            use_gpu=processing_config.get("use_gpu", True),
+            table_mode=processing_config.get("table_mode", "accurate"),
+            images_scale=processing_config.get("images_scale", 3.0),
+            do_cell_matching=processing_config.get("do_cell_matching", True),
+            ocr_confidence_threshold=processing_config.get("ocr_confidence_threshold", 0.05),
         )
 
         try:
@@ -295,10 +311,26 @@ async def main():
         "--doc-type", choices=["slides", "filing"], default="slides",
         help="Document type for test batch (default: slides)"
     )
+    parser.add_argument(
+        "--cpu-only",
+        action="store_true",
+        help="Force CPU-only processing (disable GPU)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Override batch size from config"
+    )
 
     args = parser.parse_args()
 
     pipeline = PipelineRunner(args.config)
+
+    # Override config with command-line arguments
+    if args.cpu_only:
+        pipeline.config.setdefault("processing", {})["use_gpu"] = False
+    if args.batch_size:
+        pipeline.config.setdefault("processing", {})["batch_size"] = args.batch_size
 
     if args.stats:
         stats = pipeline.metadata.get_statistics()

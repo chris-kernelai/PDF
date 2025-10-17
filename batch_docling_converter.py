@@ -2,7 +2,8 @@
 Batch Docling PDF Converter
 
 This module provides batch processing capabilities for converting multiple PDF files
-to Markdown using Docling. It processes files asynchronously in configurable batches.
+to Markdown using Docling. It processes files in parallel using ProcessPoolExecutor
+for true multi-core utilization.
 """
 
 import asyncio
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import logging
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 import httpx
 
@@ -46,6 +49,121 @@ def clean_repeating_characters(text: str) -> str:
     text = re.sub(r'([^\s])\1{49,}', replace_long_repeats, text)
 
     return text
+
+
+def _process_single_pdf_worker(
+    pdf_file_path: str,
+    output_path: str,
+    raw_output_path: str,
+    images_output_dir: str,
+    use_gpu: bool,
+    table_mode: str,
+    images_scale: float,
+    do_cell_matching: bool,
+    ocr_confidence_threshold: float,
+    add_page_numbers: bool,
+) -> Tuple[str, str, bool, str, int, int, float]:
+    """
+    Worker function for converting a single PDF in a separate process.
+    This function is picklable and can be used with ProcessPoolExecutor.
+
+    Args:
+        pdf_file_path: Path to PDF file (as string)
+        output_path: Path for output markdown file
+        raw_output_path: Path for raw markdown file
+        images_output_dir: Directory for extracted images
+        use_gpu: Whether to use GPU
+        table_mode: Table extraction mode
+        images_scale: Image scaling factor
+        do_cell_matching: Enable cell matching
+        ocr_confidence_threshold: OCR threshold
+        add_page_numbers: Whether to add page numbers
+
+    Returns:
+        Tuple of (input_path, output_path, success, error_message, image_count, page_count, processing_time)
+    """
+    import time
+    import os
+    from pathlib import Path
+
+    # Force CPU if use_gpu is False by hiding GPUs from this process
+    if not use_gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+    pdf_file = Path(pdf_file_path)
+
+    try:
+        # Create converter instance for this process
+        converter = DoclingConverter(
+            artifacts_path=None,
+            add_page_numbers=add_page_numbers,
+            use_gpu=use_gpu,
+            table_mode=table_mode,
+            images_scale=images_scale,
+            do_cell_matching=do_cell_matching,
+            ocr_confidence_threshold=ocr_confidence_threshold,
+        )
+
+        try:
+            start_time = time.time()
+
+            # Convert PDF
+            markdown, document, page_count = converter.convert_pdf(pdf_file)
+            processing_time = time.time() - start_time
+
+            # Extract images
+            doc_id = pdf_file.stem
+            if doc_id.startswith('doc_'):
+                doc_id = doc_id[4:]
+
+            image_count = converter.extract_images(
+                document,
+                Path(images_output_dir),
+                doc_id
+            )
+
+            # Add metadata header
+            metadata_header = f"""---
+**Document:** {pdf_file.name}
+**Pages:** {page_count}
+**Images Extracted:** {image_count}
+**Images Location:** images/{doc_id}/
+**Processing Time:** {processing_time:.2f} seconds
+**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+---
+
+"""
+            raw_markdown = metadata_header + markdown
+
+            # Clean repeating characters
+            cleaned_markdown = clean_repeating_characters(raw_markdown)
+
+            # Save raw version
+            Path(raw_output_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(raw_output_path, "w", encoding="utf-8") as f:
+                f.write(raw_markdown)
+
+            # Save cleaned version
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(cleaned_markdown)
+
+            return (
+                pdf_file_path,
+                output_path,
+                True,
+                "",
+                image_count,
+                page_count,
+                processing_time,
+            )
+
+        finally:
+            converter.cleanup()
+
+    except Exception as e:
+        error_msg = f"Failed to convert {pdf_file.name}: {str(e)}"
+        return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
 
 
 class BatchDoclingConverter:
@@ -345,169 +463,184 @@ class BatchDoclingConverter:
             self.logger.error("Failed to upload %s: %s", pdf_file.name, error_msg)
             return False, error_msg
 
-    async def _convert_single_file(self, pdf_file: Path) -> Tuple[Path, Path, bool, str, int]:
+    def _convert_single_file_sync(self, pdf_file: Path) -> Tuple[Path, Path, bool, str, int, int, float]:
         """
-        Convert a single PDF file to Markdown.
+        Convert a single PDF file to Markdown (synchronous version for process pool).
 
         Args:
             pdf_file: Path to the PDF file to convert.
 
         Returns:
-            Tuple of (input_path, output_path, success, error_message, image_count)
+            Tuple of (input_path, output_path, success, error_message, image_count, page_count, processing_time)
         """
         output_path = self._get_output_path(pdf_file)
 
         # Check if already processed
         if self._is_already_processed(pdf_file):
             self.logger.info("Skipping %s - already processed", pdf_file.name)
-            return pdf_file, output_path, True, "Skipped - already processed", 0
+            return pdf_file, output_path, True, "Skipped - already processed", 0, 0, 0.0
 
         # Skip if output file already exists
         if output_path.exists():
             self.logger.info("Skipping %s - output already exists", pdf_file.name)
-            return pdf_file, output_path, True, "Skipped - output already exists", 0
+            return pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0
 
-        try:
-            # Create output directory if it doesn't exist
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Prepare paths for worker
+        raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
+        images_output_dir = 'images'
 
-            # Convert the file
-            converter = DoclingConverter(
-                artifacts_path=self.artifacts_path,
-                add_page_numbers=self.add_page_numbers,
-                use_gpu=self.use_gpu,
-                table_mode=self.table_mode,
-                images_scale=self.images_scale,
-                do_cell_matching=self.do_cell_matching,
-                ocr_confidence_threshold=self.ocr_confidence_threshold,
+        # Call worker function
+        result = _process_single_pdf_worker(
+            pdf_file_path=str(pdf_file),
+            output_path=str(output_path),
+            raw_output_path=str(raw_output_path),
+            images_output_dir=images_output_dir,
+            use_gpu=self.use_gpu,
+            table_mode=self.table_mode,
+            images_scale=self.images_scale,
+            do_cell_matching=self.do_cell_matching,
+            ocr_confidence_threshold=self.ocr_confidence_threshold,
+            add_page_numbers=self.add_page_numbers,
+        )
+
+        # Unpack result
+        input_path_str, output_path_str, success, error_msg, image_count, page_count, processing_time = result
+
+        if success and not error_msg:
+            # Log conversion to processing log
+            doc_id = pdf_file.stem
+            self.proc_logger.log_conversion(
+                doc_id=doc_id,
+                pages=page_count,
+                duration_seconds=processing_time,
+                status="success"
             )
 
-            try:
-                import time
-                start_time = time.time()
+            self.logger.info(
+                "Successfully converted %s (%d pages, %d images in %.2f seconds)",
+                pdf_file.name,
+                page_count,
+                image_count,
+                processing_time
+            )
 
-                markdown, document, page_count = converter.convert_pdf(pdf_file)
+        return Path(input_path_str), Path(output_path_str), success, error_msg, image_count, page_count, processing_time
 
-                processing_time = time.time() - start_time
-
-                # Extract images (always enabled now)
-                image_count = 0
-                # Extract document ID from filename
-                doc_id = self._extract_doc_id_from_filename(pdf_file)
-                if doc_id is None:
-                    doc_id = pdf_file.stem
-
-                # Create images directory in easy-to-find location
-                images_output_dir = Path('images')
-                image_count = converter.extract_images(document, images_output_dir, doc_id)
-                self.logger.info("  Extracted %d images to images/%s/", image_count, doc_id)
-
-                # Add metadata header to markdown
-                metadata_header = f"""---
-**Document:** {pdf_file.name}
-**Pages:** {page_count}
-**Images Extracted:** {image_count}
-**Images Location:** images/{doc_id}/
-**Processing Time:** {processing_time:.2f} seconds
-**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
----
-
-"""
-                raw_markdown = metadata_header + markdown
-
-                # Clean repeating characters
-                cleaned_markdown = clean_repeating_characters(raw_markdown)
-
-                # Save raw version to processed_raw/
-                # Use proper path operations instead of string replace
-                raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
-                raw_output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(raw_output_path, "w", encoding="utf-8") as f:
-                    f.write(raw_markdown)
-
-                # Save cleaned version to processed/ (default)
-                with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(cleaned_markdown)
-
-                self.logger.info(
-                    "Successfully converted %s (%d pages, %d images in %.2f seconds)",
-                    pdf_file.name,
-                    page_count,
-                    image_count,
-                    processing_time
-                )
-
-                # Log conversion to processing log
-                # Extract doc_id from filename for logging
-                doc_id = pdf_file.stem  # Use full stem as doc_id
-                self.proc_logger.log_conversion(
-                    doc_id=doc_id,
-                    pages=page_count,
-                    duration_seconds=processing_time,
-                    status="success"
-                )
-
-                return pdf_file, output_path, True, "", image_count
-
-            finally:
-                converter.cleanup()
-
-        except (FileNotFoundError, ValueError, OSError) as e:
-            error_msg = f"Failed to convert {pdf_file.name}: {str(e)}"
-            self.logger.error("%s", error_msg)
-            return pdf_file, output_path, False, error_msg, 0
-
-    async def _process_batch(
-        self, pdf_files: List[Path]
-    ) -> List[Tuple[Path, Path, bool, str, int]]:
+    def _process_batch_parallel(
+        self, pdf_files: List[Path], max_workers: Optional[int] = None
+    ) -> List[Tuple[Path, Path, bool, str, int, int, float]]:
         """
-        Process a batch of PDF files concurrently.
+        Process a batch of PDF files in parallel using ProcessPoolExecutor.
 
         Args:
             pdf_files: List of PDF files to process.
+            max_workers: Maximum number of worker processes (defaults to batch_size).
 
         Returns:
-            List of tuples containing (input_path, output_path, success, error_message, image_count) for each file.
+            List of tuples containing (input_path, output_path, success, error_message, image_count, page_count, processing_time).
         """
-        tasks = [self._convert_single_file(pdf_file) for pdf_file in pdf_files]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if max_workers is None:
+            max_workers = self.batch_size
 
-        # Handle any exceptions that occurred
-        processed_results: List[Tuple[Path, Path, bool, str, int]] = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                error_msg = f"Task failed with exception: {str(result)}"
-                self.logger.error(
-                    "Batch processing error for %s: %s", pdf_files[i].name, error_msg
-                )
-                processed_results.append(
-                    (pdf_files[i], self._get_output_path(pdf_files[i]), False, error_msg, 0)
-                )
-            elif isinstance(result, tuple) and len(result) == 5:
-                processed_results.append(result)
-            else:
-                # Handle unexpected result type
-                error_msg = f"Unexpected result type: {type(result)}"
-                self.logger.error(
-                    "Unexpected result for %s: %s", pdf_files[i].name, error_msg
-                )
-                processed_results.append(
-                    (pdf_files[i], self._get_output_path(pdf_files[i]), False, error_msg, 0)
-                )
+        results = []
 
-        return processed_results
+        # Use ProcessPoolExecutor for true parallelism
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_pdf = {}
+            for pdf_file in pdf_files:
+                output_path = self._get_output_path(pdf_file)
+                raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
+
+                # Skip if already processed or exists
+                if self._is_already_processed(pdf_file):
+                    self.logger.info("Skipping %s - already processed", pdf_file.name)
+                    results.append((pdf_file, output_path, True, "Skipped - already processed", 0, 0, 0.0))
+                    continue
+
+                if output_path.exists():
+                    self.logger.info("Skipping %s - output already exists", pdf_file.name)
+                    results.append((pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0))
+                    continue
+
+                # Submit job to executor
+                future = executor.submit(
+                    _process_single_pdf_worker,
+                    str(pdf_file),
+                    str(output_path),
+                    str(raw_output_path),
+                    'images',
+                    self.use_gpu,
+                    self.table_mode,
+                    self.images_scale,
+                    self.do_cell_matching,
+                    self.ocr_confidence_threshold,
+                    self.add_page_numbers,
+                )
+                future_to_pdf[future] = pdf_file
+
+            # Collect results as they complete
+            for future in as_completed(future_to_pdf):
+                pdf_file = future_to_pdf[future]
+                try:
+                    result = future.result()
+                    input_path_str, output_path_str, success, error_msg, image_count, page_count, processing_time = result
+
+                    if success and not error_msg:
+                        doc_id = pdf_file.stem
+                        self.proc_logger.log_conversion(
+                            doc_id=doc_id,
+                            pages=page_count,
+                            duration_seconds=processing_time,
+                            status="success"
+                        )
+                        self.logger.info(
+                            "Successfully converted %s (%d pages, %d images in %.2f seconds)",
+                            pdf_file.name,
+                            page_count,
+                            image_count,
+                            processing_time
+                        )
+                    else:
+                        self.logger.error("Failed to convert %s: %s", pdf_file.name, error_msg)
+
+                    results.append((
+                        Path(input_path_str),
+                        Path(output_path_str),
+                        success,
+                        error_msg,
+                        image_count,
+                        page_count,
+                        processing_time
+                    ))
+
+                except Exception as e:
+                    error_msg = f"Worker process failed: {str(e)}"
+                    self.logger.error("Error processing %s: %s", pdf_file.name, error_msg)
+                    results.append((
+                        pdf_file,
+                        self._get_output_path(pdf_file),
+                        False,
+                        error_msg,
+                        0,
+                        0,
+                        0.0
+                    ))
+
+        return results
 
     async def convert_all(self) -> Dict[str, int]:
         """
-        Convert all PDF files in the input folder to Markdown.
+        Convert all PDF files in the input folder to Markdown using parallel processing.
 
         Returns:
             Dictionary containing conversion statistics.
         """
         self.logger.info(
-            "Starting batch conversion from %s to %s",
+            "Starting batch conversion from %s to %s (max workers: %d)",
             self.input_folder,
             self.output_folder,
+            self.batch_size,
         )
 
         # Get all PDF files
@@ -520,63 +653,39 @@ class BatchDoclingConverter:
 
         self.logger.info("Found %d PDF files to convert", len(pdf_files))
 
-        # Process files in batches
-        for i in range(0, len(pdf_files), self.batch_size):
-            batch = pdf_files[i : i + self.batch_size]
-            batch_num = (i // self.batch_size) + 1
-            total_batches = (len(pdf_files) + self.batch_size - 1) // self.batch_size
+        # Process all files in parallel using ProcessPoolExecutor
+        self.logger.info("Processing files with %d parallel workers...", self.batch_size)
 
-            self.logger.info(
-                "Processing batch %d/%d (%d files)",
-                batch_num,
-                total_batches,
-                len(batch),
-            )
+        results = self._process_batch_parallel(pdf_files, max_workers=self.batch_size)
 
-            # Process the batch
-            results = await self._process_batch(batch)
+        # Update statistics, upload files, and remove successfully processed files
+        # Note: We need to run upload in async context if enabled
+        upload_tasks = []
 
-            # Update statistics, upload files, and remove successfully processed files
-            for input_path, _output_path, success, error_msg, image_count in results:
-                # Track image count
-                if success and image_count > 0:
-                    self.stats["total_images_extracted"] += image_count
-                if success:
-                    if "Skipped - already processed" in error_msg:
-                        self.stats["skipped_already_processed"] += 1
-                    elif "Skipped" in error_msg:
-                        self.stats["skipped_files"] += 1
+        for input_path, _output_path, success, error_msg, image_count, _page_count, _processing_time in results:
+            # Track image count
+            if success and image_count > 0:
+                self.stats["total_images_extracted"] += image_count
+            if success:
+                if "Skipped - already processed" in error_msg:
+                    self.stats["skipped_already_processed"] += 1
+                elif "Skipped" in error_msg:
+                    self.stats["skipped_files"] += 1
+                else:
+                    self.stats["processed_files"] += 1
+
+                    # Mark as processed
+                    self._mark_as_processed(input_path)
+
+                    # Upload the PDF if upload is enabled
+                    if self.upload_enabled:
+                        upload_tasks.append((input_path, _output_path))
                     else:
-                        self.stats["processed_files"] += 1
-
-                        # Mark as processed
-                        self._mark_as_processed(input_path)
-
-                        # Upload the PDF if upload is enabled
-                        if self.upload_enabled:
-                            upload_success, upload_msg = await self._upload_pdf(input_path)
-                            if upload_success:
-                                self.stats["uploaded_files"] += 1
-                            else:
-                                self.stats["upload_failed_files"] += 1
-                                self.logger.warning(
-                                    "Upload failed for %s: %s",
-                                    input_path.name,
-                                    upload_msg
-                                )
-
-                        # Move the successfully processed PDF to pdfs_processed folder
-                        # Only move if upload succeeded or upload is not enabled
-                        should_move = self.remove_processed and (
-                            not self.upload_enabled or upload_success
-                        )
-                        if should_move:
+                        # Move immediately if no upload needed
+                        if self.remove_processed:
                             try:
-                                # Create pdfs_processed directory
                                 processed_pdf_dir = Path("pdfs_processed")
                                 processed_pdf_dir.mkdir(exist_ok=True)
-
-                                # Move the PDF
                                 dest_path = processed_pdf_dir / input_path.name
                                 input_path.rename(dest_path)
                                 self.stats["removed_files"] += 1
@@ -587,8 +696,39 @@ class BatchDoclingConverter:
                                     input_path.name,
                                     e
                                 )
+            else:
+                self.stats["failed_files"] += 1
+
+        # Handle uploads asynchronously if needed
+        if upload_tasks:
+            for input_path, _output_path in upload_tasks:
+                upload_success, upload_msg = await self._upload_pdf(input_path)
+                if upload_success:
+                    self.stats["uploaded_files"] += 1
                 else:
-                    self.stats["failed_files"] += 1
+                    self.stats["upload_failed_files"] += 1
+                    self.logger.warning(
+                        "Upload failed for %s: %s",
+                        input_path.name,
+                        upload_msg
+                    )
+
+                # Move after upload attempt
+                should_move = self.remove_processed and upload_success
+                if should_move:
+                    try:
+                        processed_pdf_dir = Path("pdfs_processed")
+                        processed_pdf_dir.mkdir(exist_ok=True)
+                        dest_path = processed_pdf_dir / input_path.name
+                        input_path.rename(dest_path)
+                        self.stats["removed_files"] += 1
+                        self.logger.info("Moved processed file to: %s", dest_path)
+                    except OSError as e:
+                        self.logger.warning(
+                            "Failed to move processed file %s: %s",
+                            input_path.name,
+                            e
+                        )
 
         # Log final statistics
         self.logger.info("Conversion completed!")

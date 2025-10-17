@@ -209,10 +209,10 @@ class ProcessingLogViewer:
             if metrics_parts:
                 print(f"   Metrics:  {' | '.join(metrics_parts)}")
 
-            # Timing
+            # Timing - show conversion time prominently since it's the main processing step
             timing_parts = []
             if doc['conversion_duration']:
-                timing_parts.append(f"Convert: {doc['conversion_duration']:.1f}s")
+                timing_parts.append(f"PDF→MD: {doc['conversion_duration']:.1f}s")
             if doc['extraction_duration']:
                 timing_parts.append(f"Extract: {doc['extraction_duration']:.1f}s")
             if doc['download_duration']:
@@ -224,7 +224,12 @@ class ProcessingLogViewer:
                 print(f"   Timing:   {' | '.join(timing_parts)}")
 
             if doc['total_duration'] > 0:
-                print(f"   Total:    {doc['total_duration']:.1f}s ({doc['total_duration']/60:.1f} min)")
+                mins = int(doc['total_duration'] / 60)
+                secs = int(doc['total_duration'] % 60)
+                if mins > 0:
+                    print(f"   Total:    {mins}m {secs}s ({doc['total_duration']:.1f}s)")
+                else:
+                    print(f"   Total:    {doc['total_duration']:.1f}s")
 
             # Latest activity
             if doc['latest_timestamp']:
@@ -267,6 +272,11 @@ class ProcessingLogViewer:
         total_images_integrated = sum(d['images_integrated'] or 0 for d in self.docs.values())
 
         total_time = sum(d['total_duration'] for d in self.docs.values())
+        total_conversion_time = sum(d['conversion_duration'] or 0 for d in self.docs.values())
+
+        # Calculate documents that have conversion stage completed
+        docs_with_conversion = [d for d in self.docs.values() if d['conversion_duration'] is not None]
+        conversion_doc_count = len(docs_with_conversion)
 
         print("\n" + "=" * 80)
         print("📈 SUMMARY STATISTICS")
@@ -276,15 +286,32 @@ class ProcessingLogViewer:
         print(f"  🔄 In Progress: {in_progress_docs}")
         print(f"  ⏸️  Not Started: {not_started_docs}")
         print()
-        print(f"Pages Processed:  {total_pages}")
-        print(f"Images Extracted: {total_images_extracted}")
-        print(f"Images Filtered:  {total_images_filtered}")
-        print(f"Images Integrated: {total_images_integrated}")
+        print(f"Pages Processed:  {total_pages:,}")
+        print(f"Images Extracted: {total_images_extracted:,}")
+        print(f"Images Filtered:  {total_images_filtered:,}")
+        print(f"Images Integrated: {total_images_integrated:,}")
         print()
-        print(f"Total Time:       {total_time:.1f}s ({total_time/60:.1f} min)")
+
+        # Show conversion time stats (the main processing bottleneck)
+        if conversion_doc_count > 0:
+            avg_conversion_time = total_conversion_time / conversion_doc_count
+            print(f"PDF Conversion Stats:")
+            print(f"  Documents converted: {conversion_doc_count}")
+            mins = int(total_conversion_time / 60)
+            secs = int(total_conversion_time % 60)
+            print(f"  Total time:          {mins}m {secs}s ({total_conversion_time:.1f}s)")
+            print(f"  Average/doc:         {avg_conversion_time:.1f}s")
+            if total_pages > 0:
+                print(f"  Average/page:        {total_conversion_time/total_pages:.1f}s")
+            print()
+
+        # Show overall time
+        total_mins = int(total_time / 60)
+        total_secs = int(total_time % 60)
+        print(f"Total Pipeline Time: {total_mins}m {total_secs}s ({total_time:.1f}s)")
         if completed_docs > 0:
             avg_time = total_time / completed_docs
-            print(f"Avg Time/Doc:     {avg_time:.1f}s ({avg_time/60:.1f} min)")
+            print(f"Avg Time/Doc:        {avg_time:.1f}s")
         print("=" * 80)
 
 

@@ -53,3 +53,4 @@ venv-mcp/
 *.md
 *.json
 *.txt
+*.pem

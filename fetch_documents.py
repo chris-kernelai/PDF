@@ -10,21 +10,29 @@ import aiofiles
 import os
 import yaml
 import logging
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from dotenv import load_dotenv
 from document_metadata import MetadataManager
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class DocumentFetcher:
     """Fetches documents from the Librarian API."""
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42):
         """
         Initialize document fetcher.
 
         Args:
             config_path: Path to configuration file.
+            limit: Maximum number of documents to fetch (None = no limit).
+            randomize: Whether to randomize document order for sampling.
+            random_seed: Random seed for reproducible sampling (default: 42).
         """
         self.config = self._load_config(config_path)
         self._setup_logging()
@@ -43,6 +51,15 @@ class DocumentFetcher:
 
         self.metadata = MetadataManager(self.config["paths"]["metadata_db"])
 
+        # Document limit and sampling
+        self.limit = limit
+        self.randomize = randomize
+        self.random_seed = random_seed
+
+        if self.randomize:
+            random.seed(self.random_seed)
+            self.logger.info(f"Randomization enabled with seed {self.random_seed}")
+
         # Statistics
         self.stats = {
             "companies_found": 0,
@@ -51,6 +68,8 @@ class DocumentFetcher:
             "documents_skipped": 0,
             "documents_downloaded": 0,
             "documents_failed": 0,
+            "filings_found": 0,
+            "slides_found": 0,
         }
 
     def _load_config(self, config_path: str) -> Dict:
@@ -208,6 +227,12 @@ class DocumentFetcher:
         page_size = self.config["download"]["document_page_size"]
 
         while True:
+            # When randomizing, fetch more documents than limit to ensure diverse sample
+            # Don't stop early - we'll randomize and sample after fetching all
+            if self.limit and not self.randomize and len(all_documents) >= self.limit:
+                self.logger.info(f"Reached document limit of {self.limit}, stopping fetch")
+                break
+
             payload = {
                 "company_id": company_ids,
                 "document_type": self.config["filters"]["document_types"],
@@ -241,10 +266,31 @@ class DocumentFetcher:
             if not documents:
                 break
 
-            all_documents.extend(documents)
-            self.logger.info(f"Found {len(documents)} documents on page {page}")
+            # Apply limit if specified (only when not randomizing)
+            if self.limit and not self.randomize:
+                remaining = self.limit - len(all_documents)
+                if len(documents) > remaining:
+                    documents = documents[:remaining]
 
-            # Check if there are more pages (if we got less than page_size, we're done)
+            all_documents.extend(documents)
+
+            # Track document types
+            for doc in documents:
+                doc_type = doc.get("document_type", "").lower()
+                if "filing" in doc_type:
+                    self.stats["filings_found"] += 1
+                elif "slide" in doc_type:
+                    self.stats["slides_found"] += 1
+
+            self.logger.info(
+                f"Found {len(documents)} documents on page {page} "
+                f"(total: {len(all_documents)}, filings: {self.stats['filings_found']}, "
+                f"slides: {self.stats['slides_found']})"
+            )
+
+            # Check if we've reached limit or end of results
+            if self.limit and not self.randomize and len(all_documents) >= self.limit:
+                break
             if len(documents) < page_size:
                 break
 
@@ -254,7 +300,10 @@ class DocumentFetcher:
             await asyncio.sleep(self.config["download"]["rate_limit_delay"])
 
         self.stats["documents_found"] = len(all_documents)
-        self.logger.info(f"Total documents found: {len(all_documents)}")
+        self.logger.info(
+            f"Total documents found: {len(all_documents)} "
+            f"({self.stats['filings_found']} filings, {self.stats['slides_found']} slides)"
+        )
         return all_documents
 
     def _add_documents_to_metadata(
@@ -476,6 +525,16 @@ class DocumentFetcher:
                 self.logger.warning("No documents found")
                 return
 
+            # Randomize document order if requested (for diverse sampling)
+            if self.randomize:
+                self.logger.info(f"Randomizing {len(documents)} documents with seed {self.random_seed}")
+                random.shuffle(documents)
+
+                # If limit is set, take first N documents (now randomized)
+                if self.limit and len(documents) > self.limit:
+                    documents = documents[:self.limit]
+                    self.logger.info(f"Selected {self.limit} random documents from total pool")
+
             # Step 3: Add to metadata database
             self._add_documents_to_metadata(documents, company_lookup)
 
@@ -492,6 +551,8 @@ class DocumentFetcher:
         self.logger.info("Fetch Summary:")
         self.logger.info(f"  Companies found: {self.stats['companies_found']}")
         self.logger.info(f"  Documents found: {self.stats['documents_found']}")
+        self.logger.info(f"    - Filings: {self.stats['filings_found']}")
+        self.logger.info(f"    - Slides: {self.stats['slides_found']}")
         self.logger.info(f"  Documents added to DB: {self.stats['documents_added']}")
         self.logger.info(f"  Documents skipped: {self.stats['documents_skipped']}")
         if download_pdfs:
@@ -538,10 +599,31 @@ async def main():
     parser.add_argument(
         "--stats", action="store_true", help="Show metadata database statistics"
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum number of documents to fetch (e.g., 1000 for test batch)",
+    )
+    parser.add_argument(
+        "--randomize",
+        action="store_true",
+        help="Randomize document order for diverse sampling (useful with --limit)",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible sampling (default: 42)",
+    )
 
     args = parser.parse_args()
 
-    fetcher = DocumentFetcher(args.config)
+    fetcher = DocumentFetcher(
+        args.config,
+        limit=args.limit,
+        randomize=args.randomize,
+        random_seed=args.random_seed
+    )
 
     if args.stats:
         stats = fetcher.metadata.get_statistics()

@@ -75,6 +75,27 @@ paths:
   output_folder: "processed"
   metadata_db: "to_process/metadata.db"
 
+# Processing settings
+processing:
+  # Number of PDFs to convert concurrently (uses ProcessPoolExecutor)
+  # Set based on your CPU/GPU cores. 4-8 is typical for multi-core systems.
+  batch_size: 2
+
+  # Whether to use GPU acceleration (if available)
+  use_gpu: true
+
+  # Table extraction mode: "accurate" (slower, better) or "fast"
+  table_mode: "accurate"
+
+  # Image scaling factor (higher = better quality but slower)
+  images_scale: 3.0
+
+  # Enable precise cell matching in tables
+  do_cell_matching: true
+
+  # OCR confidence threshold (0-1, lower = more text captured)
+  ocr_confidence_threshold: 0.05
+
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
