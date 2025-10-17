@@ -111,9 +111,20 @@ class ImageDescriptionIntegrator:
         descriptions_by_doc = defaultdict(list)
         all_descriptions = []
 
-        # Find all description JSON files (exclude _with_filters.json which contains all descriptions)
+        # Find all description JSON files - try multiple patterns
+        # Pattern 1: image_descriptions_*.json (original format)
         json_files = [f for f in self.descriptions_dir.glob("image_descriptions_*.json")
                       if "_with_filters" not in f.name and "uuid_tracking" not in f.name]
+
+        # Pattern 2: filtered_descriptions.json (filter results format)
+        filtered_file = self.descriptions_dir / "filtered_descriptions.json"
+        if filtered_file.exists():
+            json_files.append(filtered_file)
+
+        # Pattern 3: filter_results_all.json (all filter results including excluded)
+        all_results_file = self.descriptions_dir / "filter_results_all.json"
+        if not json_files and all_results_file.exists():
+            json_files.append(all_results_file)
 
         if not json_files:
             logger.warning(f"No description files found in {self.descriptions_dir}")
@@ -137,7 +148,17 @@ class ImageDescriptionIntegrator:
         # Filter by latest UUID
         filtered_count = 0
         for desc in all_descriptions:
-            doc_id = desc["document_id"]
+            # Extract document_id from key if document_id is invalid (e.g., "page")
+            doc_id = desc.get("document_id", "")
+            if not doc_id or doc_id == "page":
+                # Parse from key format: "37503_page_022_img_49" -> "37503"
+                key = desc.get("key", "")
+                if key and "_" in key:
+                    doc_id = key.split("_")[0]
+                else:
+                    logger.warning(f"Could not extract document_id from key: {key}")
+                    continue
+
             batch_uuid = desc.get("batch_uuid", "")
 
             # If we have UUID tracking, only keep descriptions from latest UUID
