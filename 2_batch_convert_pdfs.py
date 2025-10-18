@@ -9,6 +9,8 @@ for true multi-core utilization.
 import asyncio
 import os
 import re
+import signal
+import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -21,6 +23,21 @@ import httpx
 
 from docling_converter import DoclingConverter
 from processing_logger import ProcessingLogger
+
+# Global flag for graceful shutdown
+_shutdown_requested = False
+
+
+def _signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    global _shutdown_requested
+    if not _shutdown_requested:
+        _shutdown_requested = True
+        logging.warning("\n\nShutdown requested. Finishing current files and cleaning up...")
+        logging.warning("Press Ctrl+C again to force quit (not recommended - may leave GPU memory allocated)")
+    else:
+        logging.error("Force quit requested. Exiting immediately...")
+        sys.exit(1)
 
 
 def wrap_long_lines(text: str, max_line_length: int = 10000) -> str:
@@ -145,11 +162,23 @@ def _process_single_pdf_worker(
         # Skip text files - they're not real PDFs
         if mime_type.startswith('text/'):
             error_msg = f"Skipping {pdf_file.name} - detected as text file, not a PDF"
+            # DELETE THE FILE IMMEDIATELY - IT'S THE WRONG TYPE
+            try:
+                pdf_file.unlink()
+                error_msg += " [DELETED]"
+            except Exception as e:
+                error_msg += f" [DELETE FAILED: {e}]"
             return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
 
         # Skip non-PDF files
         if not mime_type.startswith('application/pdf'):
             error_msg = f"Skipping {pdf_file.name} - not a PDF (detected as {mime_type})"
+            # DELETE THE FILE IMMEDIATELY - IT'S THE WRONG TYPE
+            try:
+                pdf_file.unlink()
+                error_msg += " [DELETED]"
+            except Exception as e:
+                error_msg += f" [DELETE FAILED: {e}]"
             return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
 
     except subprocess.TimeoutExpired:
@@ -609,16 +638,24 @@ class BatchDoclingConverter:
         Returns:
             List of tuples containing (input_path, output_path, success, error_message, image_count, page_count, processing_time).
         """
+        global _shutdown_requested
+
         if max_workers is None:
             max_workers = self.batch_size
 
         results = []
 
         # Use ProcessPoolExecutor for true parallelism
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        executor = ProcessPoolExecutor(max_workers=max_workers)
+        try:
             # Submit all tasks
             future_to_pdf = {}
             for pdf_file in pdf_files:
+                # Check for shutdown before submitting new tasks
+                if _shutdown_requested:
+                    self.logger.warning("Shutdown requested - not submitting new tasks")
+                    break
+
                 output_path = self._get_output_path(pdf_file)
                 raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
 
@@ -659,9 +696,18 @@ class BatchDoclingConverter:
 
             # Collect results as they complete
             for future in as_completed(future_to_pdf):
+                # Check for shutdown request
+                if _shutdown_requested:
+                    self.logger.warning("Shutdown requested - cancelling remaining tasks")
+                    # Cancel any pending futures
+                    for f in future_to_pdf:
+                        if not f.done():
+                            f.cancel()
+                    break
+
                 pdf_file = future_to_pdf[future]
                 try:
-                    result = future.result()
+                    result = future.result(timeout=600)  # 10 minute timeout per file
                     input_path_str, output_path_str, success, error_msg, image_count, page_count, processing_time = result
 
                     if success and not error_msg:
@@ -704,6 +750,12 @@ class BatchDoclingConverter:
                         0,
                         0.0
                     ))
+
+        finally:
+            # Ensure executor is properly shut down
+            self.logger.info("Shutting down process pool...")
+            executor.shutdown(wait=True, cancel_futures=_shutdown_requested)
+            self.logger.info("Process pool shutdown complete")
 
         return results
 
@@ -763,23 +815,26 @@ class BatchDoclingConverter:
             # Track image count
             if success and image_count > 0:
                 self.stats["total_images_extracted"] += image_count
+
             if success:
                 if "Skipped - already processed" in error_msg:
                     self.stats["skipped_already_processed"] += 1
                 elif "Skipped" in error_msg:
                     self.stats["skipped_files"] += 1
                 else:
+                    # Actually processed (not skipped)
                     self.stats["processed_files"] += 1
 
                     # Mark as processed
                     self._mark_as_processed(input_path)
 
-                    # Upload the PDF if upload is enabled
+                    # Handle upload and deletion
                     if self.upload_enabled:
+                        # Add to upload queue - will be deleted after upload
                         upload_tasks.append((input_path, _output_path))
                     else:
-                        # Delete immediately if no upload needed
-                        if self.remove_processed:
+                        # No upload - delete immediately if configured
+                        if self.remove_processed and input_path.exists():
                             try:
                                 input_path.unlink()
                                 self.stats["removed_files"] += 1
@@ -791,6 +846,7 @@ class BatchDoclingConverter:
                                     e
                                 )
             else:
+                # Conversion failed
                 self.stats["failed_files"] += 1
 
         # Handle uploads asynchronously if needed
@@ -807,13 +863,13 @@ class BatchDoclingConverter:
                         upload_msg
                     )
 
-                # Delete after successful upload
+                # Delete after upload attempt (only if upload succeeded and removal is enabled)
                 should_delete = self.remove_processed and upload_success
-                if should_delete:
+                if should_delete and input_path.exists():
                     try:
                         input_path.unlink()
                         self.stats["removed_files"] += 1
-                        self.logger.info("Deleted processed file: %s", input_path.name)
+                        self.logger.info("Deleted processed file after upload: %s", input_path.name)
                     except OSError as e:
                         self.logger.warning(
                             "Failed to delete processed file %s: %s",
@@ -928,6 +984,10 @@ async def convert_folder(
 def main():
     """Command-line interface for the batch converter."""
     import argparse
+
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
 
     parser = argparse.ArgumentParser(
         description="Batch convert PDF files to Markdown using Docling"
