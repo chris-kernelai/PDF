@@ -124,6 +124,7 @@ def _process_single_pdf_worker(
     ocr_confidence_threshold: float,
     add_page_numbers: bool,
     chunk_page_limit: int,
+    batch_size: int = 2,
 ) -> Tuple[str, str, bool, str, int, int, float]:
     """
     Worker function for converting a single PDF in a separate process.
@@ -152,8 +153,9 @@ def _process_single_pdf_worker(
     # Set up GPU memory limits BEFORE importing PyTorch/Docling
     if use_gpu:
         from src.gpu_memory_manager import setup_gpu_memory_limits
-        # Each worker can use 40% of GPU memory (allows 2 workers with headroom)
-        setup_gpu_memory_limits(memory_fraction=0.4, max_split_size_mb=128)
+        # Calculate memory fraction as 0.8/batch_size for dynamic allocation
+        memory_fraction = 0.8 / batch_size
+        setup_gpu_memory_limits(memory_fraction=memory_fraction, max_split_size_mb=128)
     else:
         # Force CPU if use_gpu is False by hiding GPUs from this process
         os.environ['CUDA_VISIBLE_DEVICES'] = ''
@@ -227,7 +229,8 @@ def _process_single_pdf_worker(
 
         # Set GPU memory fraction after converter is initialized
         if use_gpu:
-            set_process_gpu_memory_fraction(0.4)
+            memory_fraction = 0.8 / batch_size
+            set_process_gpu_memory_fraction(memory_fraction)
             log_gpu_memory_stats()
 
         try:
@@ -316,6 +319,10 @@ def _process_single_pdf_worker(
                         total_image_count += image_count
 
                         # Success - break retry loop
+                        # Clear GPU cache after each chunk to free memory
+                        if use_gpu:
+                            clear_gpu_cache()
+
                         break
 
                     except Exception as chunk_error:
@@ -346,6 +353,15 @@ def _process_single_pdf_worker(
                     )
 
                 combined_markdown_parts.append(markdown)
+
+                # Explicitly delete large objects to free memory after chunk processing
+                del markdown, document
+
+                # Force garbage collection for chunked documents to reclaim memory
+                if chunked:
+                    import gc
+                    gc.collect()
+                    logging.debug(f"  Memory cleanup after {chunk_label}")
 
                 if chunked:
                     combined_markdown_parts.append(
@@ -875,6 +891,7 @@ class BatchDoclingConverter:
             ocr_confidence_threshold=self.ocr_confidence_threshold,
             add_page_numbers=self.add_page_numbers,
             chunk_page_limit=self.chunk_page_limit,
+            batch_size=self.batch_size,
         )
 
         # Unpack result
@@ -971,6 +988,7 @@ class BatchDoclingConverter:
                     self.ocr_confidence_threshold,
                     self.add_page_numbers,
                     self.chunk_page_limit,
+                    self.batch_size,
                 )
                 future_to_pdf[future] = pdf_file
 
@@ -1424,7 +1442,7 @@ def main():
     parser.add_argument(
         "--chunk-page-limit",
         type=int,
-        default=50,
+        default=30,
         help="Split PDFs into chunks with at most this many pages before processing (0 disables chunking)",
     )
 

@@ -2,25 +2,39 @@
 ################################################################################
 # LOCAL_2_aws_helper.sh
 #
-# AWS GPU instance operations - Run this FROM your LOCAL machine
+# AWS instance operations - Run this FROM your LOCAL machine
 #
 # Usage:
-#   ./LOCAL_2_aws_helper.sh setup                # Complete first-time setup
-#   ./LOCAL_2_aws_helper.sh deploy-config        # Deploy .env and GCP key
-#   ./LOCAL_2_aws_helper.sh sync-code            # Sync code changes to instance
-#   ./LOCAL_2_aws_helper.sh connect              # SSH into instance
-#   ./LOCAL_2_aws_helper.sh upload <file>        # Upload file to to_process/
-#   ./LOCAL_2_aws_helper.sh upload-dir <dir>     # Upload directory of PDFs
-#   ./LOCAL_2_aws_helper.sh run                  # Run pipeline on instance
-#   ./LOCAL_2_aws_helper.sh download             # Download processed results
-#   ./LOCAL_2_aws_helper.sh logs                 # View processing logs
-#   ./LOCAL_2_aws_helper.sh status               # Check instance status
-#   ./LOCAL_2_aws_helper.sh clean                # Remove processed files
+#   ./LOCAL_2_aws_helper.sh setup [ip]                # Complete first-time setup
+#   ./LOCAL_2_aws_helper.sh deploy-config [ip]        # Deploy .env and GCP key
+#   ./LOCAL_2_aws_helper.sh sync-code [ip]            # Sync code changes to instance
+#   ./LOCAL_2_aws_helper.sh connect [ip]              # SSH into instance
+#   ./LOCAL_2_aws_helper.sh upload <file> [ip]        # Upload file to to_process/
+#   ./LOCAL_2_aws_helper.sh upload-dir <dir> [ip]     # Upload directory of PDFs
+#   ./LOCAL_2_aws_helper.sh run [ip]                  # Run pipeline on instance
+#   ./LOCAL_2_aws_helper.sh download [ip]             # Download processed results
+#   ./LOCAL_2_aws_helper.sh logs [ip]                 # View processing logs
+#   ./LOCAL_2_aws_helper.sh status [ip]               # Check instance status
+#   ./LOCAL_2_aws_helper.sh clean [ip]                # Remove processed files
+#
+# Instance IPs:
+#   GPU instance (default): 54.183.17.152
+#   CPU instance: 3.101.138.219
 #
 ################################################################################
 
-# AWS Instance details
-INSTANCE_IP="54.183.17.152"
+# Parse optional IP address from command line
+# Check last argument - if it looks like an IP, use it
+LAST_ARG="${@: -1}"
+if [[ "$LAST_ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    INSTANCE_IP="$LAST_ARG"
+    # Remove IP from arguments
+    set -- "${@:1:$(($#-1))}"
+else
+    # Default to GPU instance
+    INSTANCE_IP="54.183.17.152"
+fi
+
 INSTANCE_USER="ubuntu"
 PEM_KEY="PDF_key.pem"
 REMOTE_DIR="~/pdf_pipeline"
@@ -31,6 +45,18 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+
+# Determine instance type for display
+if [ "$INSTANCE_IP" = "54.183.17.152" ]; then
+    INSTANCE_TYPE="GPU (Tesla T4)"
+elif [ "$INSTANCE_IP" = "3.101.138.219" ]; then
+    INSTANCE_TYPE="CPU (8 cores)"
+else
+    INSTANCE_TYPE="Custom"
+fi
+
+# Show which instance we're using
+echo -e "${BLUE}Target: ${INSTANCE_TYPE} instance @ ${INSTANCE_IP}${NC}"
 
 # Check PEM key exists
 if [ ! -f "$PEM_KEY" ]; then
@@ -202,11 +228,11 @@ ENDSSH
 
         echo ""
         echo -e "${BLUE}Step 2: Deploying configuration...${NC}"
-        "$0" deploy-config
+        "$0" deploy-config "$INSTANCE_IP"
 
         echo ""
         echo -e "${BLUE}Step 3: Syncing code...${NC}"
-        "$0" sync-code
+        "$0" sync-code "$INSTANCE_IP"
 
         echo ""
         echo -e "${BLUE}Step 4: Installing dependencies on instance...${NC}"
@@ -307,38 +333,43 @@ ENDSSH
         ;;
 
     *)
-        echo "AWS GPU Instance Helper"
+        echo "AWS Instance Helper"
         echo ""
-        echo "Usage: $0 <command> [arguments]"
+        echo "Usage: $0 <command> [arguments] [ip_address]"
         echo ""
         echo "Setup Commands:"
-        echo "  setup                Complete setup (config + code + deps)"
-        echo "  deploy-config        Deploy .env and GCP key to instance"
-        echo "  sync-code            Sync code changes to instance"
+        echo "  setup [ip]           Complete setup (config + code + deps)"
+        echo "  deploy-config [ip]   Deploy .env and GCP key to instance"
+        echo "  sync-code [ip]       Sync code changes to instance"
         echo ""
         echo "Operation Commands:"
-        echo "  connect              SSH into instance"
-        echo "  upload <file>        Upload PDF to to_process/"
-        echo "  upload-dir <dir>     Upload all PDFs from directory"
-        echo "  run                  Run full pipeline on instance"
-        echo "  run-md-only          Run pipeline (stop after markdown)"
-        echo "  status               Check instance status"
-        echo "  logs                 View processing logs"
+        echo "  connect [ip]         SSH into instance"
+        echo "  upload <file> [ip]   Upload PDF to to_process/"
+        echo "  upload-dir <dir> [ip] Upload all PDFs from directory"
+        echo "  run [ip]             Run full pipeline on instance"
+        echo "  run-md-only [ip]     Run pipeline (stop after markdown)"
+        echo "  status [ip]          Check instance status"
+        echo "  logs [ip]            View processing logs"
         echo ""
         echo "Download Commands:"
-        echo "  download             Download results to ./aws_results/"
-        echo "  download-code        Download code from AWS (excludes aws_helper.sh)"
+        echo "  download [ip]        Download results to ./aws_results/"
+        echo "  download-code [ip]   Download code from AWS (excludes aws_helper.sh)"
         echo ""
         echo "Maintenance Commands:"
-        echo "  clean                Remove all processed files on instance"
+        echo "  clean [ip]           Remove all processed files on instance"
+        echo ""
+        echo "Available Instances:"
+        echo "  GPU:  54.183.17.152  (Tesla T4, default)"
+        echo "  CPU:  3.101.138.219  (8 cores)"
         echo ""
         echo "Examples:"
-        echo "  $0 setup                    # First-time setup"
-        echo "  $0 deploy-config            # Update config files only"
-        echo "  $0 sync-code                # Update code only"
-        echo "  $0 upload-dir ./pdfs/       # Upload PDFs"
-        echo "  $0 run                      # Run pipeline"
-        echo "  $0 download                 # Download results"
+        echo "  $0 setup                        # Setup GPU instance (default)"
+        echo "  $0 setup 3.101.138.219          # Setup CPU instance"
+        echo "  $0 connect                      # Connect to GPU instance"
+        echo "  $0 connect 3.101.138.219        # Connect to CPU instance"
+        echo "  $0 sync-code 3.101.138.219      # Sync code to CPU instance"
+        echo "  $0 run                          # Run on GPU instance"
+        echo "  $0 run 3.101.138.219            # Run on CPU instance"
         exit 1
         ;;
 esac
