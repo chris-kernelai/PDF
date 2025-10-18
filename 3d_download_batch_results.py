@@ -26,7 +26,7 @@ from google import genai
 from google.cloud import storage
 
 # Import processing logger
-from processing_logger import ProcessingLogger
+from src.processing_logger import ProcessingLogger
 
 # Load environment
 load_dotenv()

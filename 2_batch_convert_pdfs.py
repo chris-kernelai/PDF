@@ -13,7 +13,7 @@ import signal
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Set
 import logging
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -21,9 +21,14 @@ import multiprocessing
 from functools import partial
 
 import httpx
+import asyncpg
+from dotenv import load_dotenv
 
-from docling_converter import DoclingConverter
-from processing_logger import ProcessingLogger
+from src.docling_converter import DoclingConverter
+from src.processing_logger import ProcessingLogger
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
@@ -310,7 +315,7 @@ def _process_single_pdf_worker(
                 f"**Document:** {pdf_file.name}",
                 f"**Pages:** {total_page_count}",
                 f"**Images Extracted:** {total_image_count}",
-                f"**Images Location:** images/{doc_id}/",
+                f"**Images Location:** data/images/{doc_id}/",
                 f"**Processing Time:** {total_processing_time:.2f} seconds",
             ]
             if chunked:
@@ -367,7 +372,7 @@ class BatchDoclingConverter:
         self,
         input_folder: Union[str, Path],
         output_folder: Union[str, Path],
-        batch_size: int = 1,
+        batch_size: int = 2,
         artifacts_path: Optional[str] = None,
         add_page_numbers: bool = False,
         remove_processed: bool = True,
@@ -462,11 +467,24 @@ class BatchDoclingConverter:
             "uploaded_files": 0,
             "upload_failed_files": 0,
             "skipped_already_processed": 0,
+            "skipped_has_both_reps": 0,
             "total_images_extracted": 0,
         }
 
         # Initialize processing logger
         self.proc_logger = ProcessingLogger()
+
+        # Supabase database connection parameters for checking existing representations
+        self.supabase_db_config = {
+            "host": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", "5432")),
+            "database": os.getenv("DB_NAME", "postgres"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+        }
+
+        # Cache for existing representations in Supabase
+        self.existing_representations: Dict[int, Set[str]] = {}
 
     def _load_processed_documents(self) -> set:
         """
@@ -487,6 +505,85 @@ class BatchDoclingConverter:
             logging.warning(f"Could not load processed documents list: {e}")
             return set()
 
+    async def _fetch_existing_representations_from_supabase(
+        self, document_ids: Optional[List[int]] = None
+    ) -> Dict[int, Set[str]]:
+        """
+        Fetch existing document representations from Supabase with pagination.
+
+        Args:
+            document_ids: Optional list of document IDs to check. If None, checks all.
+
+        Returns:
+            Dict mapping document_id to set of representation types (e.g., {'DOCLING', 'DOCLING_IMG'})
+        """
+        self.logger.info("Checking Supabase for existing document representations...")
+
+        try:
+            # Create asyncpg connection pool
+            pool = await asyncpg.create_pool(**self.supabase_db_config)
+
+            try:
+                page_size = 1000
+                offset = 0
+                existing = {}
+
+                async with pool.acquire() as conn:
+                    while True:
+                        # Query with pagination
+                        if document_ids:
+                            query = """
+                                SELECT kdocument_id, representation_type::text
+                                FROM librarian.document_locations_v2
+                                WHERE kdocument_id = ANY($1)
+                                AND representation_type::text IN ('DOCLING', 'DOCLING_IMG')
+                                ORDER BY kdocument_id
+                                LIMIT $2 OFFSET $3
+                            """
+                            rows = await conn.fetch(query, document_ids, page_size, offset)
+                        else:
+                            query = """
+                                SELECT kdocument_id, representation_type::text
+                                FROM librarian.document_locations_v2
+                                WHERE representation_type::text IN ('DOCLING', 'DOCLING_IMG')
+                                ORDER BY kdocument_id
+                                LIMIT $1 OFFSET $2
+                            """
+                            rows = await conn.fetch(query, page_size, offset)
+
+                        # Break if no more results
+                        if not rows:
+                            break
+
+                        # Process results
+                        for row in rows:
+                            doc_id = row["kdocument_id"]
+                            rep_type = row["representation_type"]
+                            if doc_id not in existing:
+                                existing[doc_id] = set()
+                            existing[doc_id].add(rep_type)
+
+                        # Move to next page
+                        offset += page_size
+                        self.logger.debug(f"Fetched {len(rows)} representations (offset: {offset})")
+
+                        # If we got fewer results than page_size, we're done
+                        if len(rows) < page_size:
+                            break
+
+                self.logger.info(
+                    f"Found {len(existing)} documents with existing representations in Supabase"
+                )
+                return existing
+
+            finally:
+                await pool.close()
+
+        except Exception as e:
+            self.logger.error(f"Failed to check Supabase for existing representations: {e}")
+            # Return empty dict on error - we'll proceed without filtering
+            return {}
+
     def _extract_doc_id_from_filename(self, pdf_file: Path) -> Optional[str]:
         """
         Extract document ID from PDF filename.
@@ -502,6 +599,30 @@ class BatchDoclingConverter:
         if filename.startswith('doc_'):
             return filename[4:]  # Remove 'doc_' prefix
         return None
+
+    def _has_both_representations(self, pdf_file: Path) -> bool:
+        """
+        Check if a document already has both DOCLING and DOCLING_IMG representations in Supabase.
+
+        Args:
+            pdf_file: Path to PDF file
+
+        Returns:
+            True if document has both representations
+        """
+        doc_id_str = self._extract_doc_id_from_filename(pdf_file)
+        if doc_id_str is None:
+            return False
+
+        try:
+            doc_id = int(doc_id_str)
+            if doc_id in self.existing_representations:
+                reps = self.existing_representations[doc_id]
+                return "DOCLING" in reps and "DOCLING_IMG" in reps
+        except ValueError:
+            pass
+
+        return False
 
     def _is_already_processed(self, pdf_file: Path) -> bool:
         """
@@ -678,8 +799,8 @@ class BatchDoclingConverter:
             return pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0
 
         # Prepare paths for worker
-        raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
-        images_output_dir = 'images'
+        raw_output_path = output_path.parent.parent / 'data' / 'processed_raw' / output_path.name
+        images_output_dir = 'data/images'
 
         # Call worker function
         result = _process_single_pdf_worker(
@@ -755,7 +876,7 @@ class BatchDoclingConverter:
                     break
 
                 output_path = self._get_output_path(pdf_file)
-                raw_output_path = output_path.parent.parent / 'processed_raw' / output_path.name
+                raw_output_path = output_path.parent.parent / 'data' / 'processed_raw' / output_path.name
 
                 # Skip if already processed or exists
                 if self._is_already_processed(pdf_file):
@@ -782,7 +903,7 @@ class BatchDoclingConverter:
                     str(pdf_file),
                     str(output_path),
                     str(raw_output_path),
-                    'images',
+                    'data/images',
                     self.use_gpu,
                     self.table_mode,
                     self.images_scale,
@@ -875,6 +996,46 @@ class BatchDoclingConverter:
             return self.stats
 
         self.logger.info("Found %d PDF files to convert", len(pdf_files))
+
+        # Check Supabase for existing representations
+        document_ids = []
+        for pdf_file in pdf_files:
+            doc_id_str = self._extract_doc_id_from_filename(pdf_file)
+            if doc_id_str:
+                try:
+                    document_ids.append(int(doc_id_str))
+                except ValueError:
+                    pass
+
+        if document_ids:
+            self.existing_representations = await self._fetch_existing_representations_from_supabase(
+                document_ids
+            )
+
+            # Filter out files that already have both representations
+            original_count = len(pdf_files)
+            pdf_files_filtered = []
+            for pdf_file in pdf_files:
+                if self._has_both_representations(pdf_file):
+                    self.stats["skipped_has_both_reps"] += 1
+                    self.logger.info(
+                        "Skipping %s - both representations already exist in Supabase",
+                        pdf_file.name
+                    )
+                else:
+                    pdf_files_filtered.append(pdf_file)
+
+            pdf_files = pdf_files_filtered
+            if self.stats["skipped_has_both_reps"] > 0:
+                self.logger.info(
+                    "Skipped %d files with both representations already in Supabase",
+                    self.stats["skipped_has_both_reps"]
+                )
+                self.logger.info("Processing %d remaining files", len(pdf_files))
+
+        if not pdf_files:
+            self.logger.info("All files already have both representations - nothing to do!")
+            return self.stats
 
         # Process all files in parallel using ProcessPoolExecutor
         self.logger.info("Processing files with %d parallel workers...", self.batch_size)
@@ -994,6 +1155,7 @@ class BatchDoclingConverter:
         self.logger.info("Conversion completed!")
         self.logger.info("Total files: %d", self.stats["total_files"])
         self.logger.info("Processed: %d", self.stats["processed_files"])
+        self.logger.info("Skipped (has both reps in Supabase): %d", self.stats["skipped_has_both_reps"])
         self.logger.info("Skipped (already processed): %d", self.stats["skipped_already_processed"])
         self.logger.info("Skipped (output exists): %d", self.stats["skipped_files"])
         self.logger.info("Failed: %d", self.stats["failed_files"])
@@ -1023,7 +1185,7 @@ class BatchDoclingConverter:
 async def convert_folder(
     input_folder: Union[str, Path],
     output_folder: Union[str, Path],
-    batch_size: int = 1,
+    batch_size: int = 2,
     add_page_numbers: bool = False,
     remove_processed: bool = True,
     use_gpu: bool = True,
@@ -1115,8 +1277,8 @@ def main():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1,
-        help="Number of files to process concurrently (default: 1)",
+        default=2,
+        help="Number of files to process concurrently (default: 2)",
     )
     parser.add_argument(
         "--add-page-numbers",
@@ -1197,7 +1359,7 @@ def main():
     parser.add_argument(
         "--extract-images",
         action="store_true",
-        help="Extract and save images from PDFs to processed_images/ folder",
+        help="Extract and save images from PDFs to data/processed_images/ folder",
     )
     parser.add_argument(
         "--chunk-page-limit",
@@ -1239,10 +1401,11 @@ def main():
     print("\nConversion completed!")
     print(f"Total files: {stats['total_files']}")
     print(f"Processed: {stats['processed_files']}")
-    print(f"Skipped: {stats['skipped_files']}")
+    print(f"Skipped (has both reps in Supabase): {stats['skipped_has_both_reps']}")
+    print(f"Skipped (output exists): {stats['skipped_files']}")
     print(f"Failed: {stats['failed_files']}")
     print(f"Total images extracted: {stats['total_images_extracted']}")
-    print(f"Images saved to: images/")
+    print(f"Images saved to: data/images/")
     if args.upload:
         print(f"Uploaded: {stats['uploaded_files']}")
         print(f"Upload failed: {stats['upload_failed_files']}")

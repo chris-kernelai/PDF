@@ -15,10 +15,11 @@ import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 from dotenv import load_dotenv
-from document_metadata import MetadataManager
+from src.document_metadata import MetadataManager
+import asyncpg
 
 # Load environment variables from .env file
 load_dotenv()
@@ -66,7 +67,7 @@ class DocumentFetcher:
         # Load completed documents from processing log
         self.completed_doc_ids = self._load_completed_documents()
 
-        # Database connection parameters
+        # Database connection parameters for kdocuments (read-only)
         self.db_config = {
             "host": os.getenv("K_LIB_DB_HOST"),
             "port": os.getenv("K_LIB_DB_PORT"),
@@ -74,6 +75,18 @@ class DocumentFetcher:
             "password": os.getenv("K_LIB_DB_PASSWORD"),
             "database": os.getenv("K_LIB_DB_NAME"),
         }
+
+        # Supabase database connection parameters for checking existing representations
+        self.supabase_db_config = {
+            "host": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", "5432")),
+            "database": os.getenv("DB_NAME", "postgres"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+        }
+
+        # Cache for existing representations in Supabase
+        self.existing_representations: Dict[int, Set[str]] = {}
 
         if self.min_doc_id:
             self.logger.info(f"Will filter documents with ID >= {self.min_doc_id}")
@@ -91,6 +104,7 @@ class DocumentFetcher:
             "documents_added": 0,
             "documents_skipped": 0,
             "documents_skipped_completed": 0,
+            "documents_skipped_has_both_reps": 0,
             "documents_downloaded": 0,
             "documents_failed": 0,
             "filings_found": 0,
@@ -150,6 +164,85 @@ class DocumentFetcher:
         except Exception as e:
             self.logger.warning(f"Could not load completed documents from processing log: {e}")
             return set()
+
+    async def _fetch_existing_representations_from_supabase(
+        self, document_ids: Optional[List[int]] = None
+    ) -> Dict[int, Set[str]]:
+        """
+        Fetch existing document representations from Supabase with pagination.
+
+        Args:
+            document_ids: Optional list of document IDs to check. If None, checks all.
+
+        Returns:
+            Dict mapping document_id to set of representation types (e.g., {'DOCLING', 'DOCLING_IMG'})
+        """
+        self.logger.info("Checking Supabase for existing document representations...")
+
+        try:
+            # Create asyncpg connection pool
+            pool = await asyncpg.create_pool(**self.supabase_db_config)
+
+            try:
+                page_size = 1000
+                offset = 0
+                existing = {}
+
+                async with pool.acquire() as conn:
+                    while True:
+                        # Query with pagination
+                        if document_ids:
+                            query = """
+                                SELECT kdocument_id, representation_type::text
+                                FROM librarian.document_locations_v2
+                                WHERE kdocument_id = ANY($1)
+                                AND representation_type::text IN ('DOCLING', 'DOCLING_IMG')
+                                ORDER BY kdocument_id
+                                LIMIT $2 OFFSET $3
+                            """
+                            rows = await conn.fetch(query, document_ids, page_size, offset)
+                        else:
+                            query = """
+                                SELECT kdocument_id, representation_type::text
+                                FROM librarian.document_locations_v2
+                                WHERE representation_type::text IN ('DOCLING', 'DOCLING_IMG')
+                                ORDER BY kdocument_id
+                                LIMIT $1 OFFSET $2
+                            """
+                            rows = await conn.fetch(query, page_size, offset)
+
+                        # Break if no more results
+                        if not rows:
+                            break
+
+                        # Process results
+                        for row in rows:
+                            doc_id = row["kdocument_id"]
+                            rep_type = row["representation_type"]
+                            if doc_id not in existing:
+                                existing[doc_id] = set()
+                            existing[doc_id].add(rep_type)
+
+                        # Move to next page
+                        offset += page_size
+                        self.logger.debug(f"Fetched {len(rows)} representations (offset: {offset})")
+
+                        # If we got fewer results than page_size, we're done
+                        if len(rows) < page_size:
+                            break
+
+                self.logger.info(
+                    f"Found {len(existing)} documents with existing representations in Supabase"
+                )
+                return existing
+
+            finally:
+                await pool.close()
+
+        except Exception as e:
+            self.logger.error(f"Failed to check Supabase for existing representations: {e}")
+            # Return empty dict on error - we'll proceed without filtering
+            return {}
 
     async def _make_request(
         self, session: aiohttp.ClientSession, endpoint: str, payload: Dict, method: str = "POST"
@@ -355,6 +448,14 @@ class DocumentFetcher:
             document_id = doc.get("id")
             company_id = doc.get("company_id")
             company = company_lookup.get(company_id, {})
+
+            # Skip if both DOCLING and DOCLING_IMG representations already exist in Supabase
+            if document_id in self.existing_representations:
+                reps = self.existing_representations[document_id]
+                if "DOCLING" in reps and "DOCLING_IMG" in reps:
+                    self.stats["documents_skipped"] += 1
+                    self.stats["documents_skipped_has_both_reps"] += 1
+                    continue
 
             # Skip if already successfully converted (in processing log)
             if str(document_id) in self.completed_doc_ids:
@@ -563,6 +664,12 @@ class DocumentFetcher:
             self.logger.warning("No documents found")
             return
 
+        # Step 2.5: Check Supabase for existing representations
+        document_ids = [doc["id"] for doc in documents]
+        self.existing_representations = await self._fetch_existing_representations_from_supabase(
+            document_ids
+        )
+
         # Randomize document order if requested (for diverse sampling)
         if self.randomize:
             self.logger.info(f"Randomizing {len(documents)} documents with seed {self.random_seed}")
@@ -600,6 +707,8 @@ class DocumentFetcher:
             self.logger.info(f"  ID range filter: {self.min_doc_id or 'MIN'} to {self.max_doc_id or 'MAX'}")
         self.logger.info(f"  Documents added to DB: {self.stats['documents_added']}")
         self.logger.info(f"  Documents skipped: {self.stats['documents_skipped']}")
+        if self.stats['documents_skipped_has_both_reps'] > 0:
+            self.logger.info(f"    - Already has both representations in Supabase: {self.stats['documents_skipped_has_both_reps']}")
         if self.stats['documents_skipped_completed'] > 0:
             self.logger.info(f"    - Already completed (in processing log): {self.stats['documents_skipped_completed']}")
         if download_pdfs:

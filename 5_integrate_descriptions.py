@@ -25,7 +25,7 @@ from datetime import datetime
 from collections import defaultdict
 
 # Import processing logger
-from processing_logger import ProcessingLogger
+from src.processing_logger import ProcessingLogger
 
 # Setup logging
 logging.basicConfig(

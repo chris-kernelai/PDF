@@ -1,273 +1,300 @@
 #!/bin/bash
+
 ################################################################################
-# run_pipeline.sh
+# PDF Processing Pipeline - Batch Runner
 #
-# Complete PDF processing pipeline from Docling conversion to image integration
+# This script runs the entire PDF processing pipeline in batches of 500 documents
+# to avoid GPU memory overflow. It processes documents within a specified ID range.
 #
-# Usage:
-#   ./run_pipeline.sh              # Run full pipeline
-#   ./run_pipeline.sh --md-only    # Stop after markdown conversion (for cleaning)
-#   ./run_pipeline.sh -h           # Show help
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size]
 #
+# Example: ./run_pipeline.sh 27000 30000 500
 ################################################################################
 
 set -e  # Exit on error
+set -u  # Exit on undefined variable
 
-# Colors for output
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-TO_PROCESS_DIR="to_process"
-PROCESSED_DIR="processed"
-MODE="developer"  # or "vertex"
+# Function to log messages
+log() {
+    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" >&2
+}
+
+warn() {
+    echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1"
+}
+
+info() {
+    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO:${NC} $1"
+}
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to cleanup on error
+cleanup_on_error() {
+    error "Pipeline failed. Cleaning up..."
+    # Don't delete PDFs on error - we may want to retry
+    exit 1
+}
+
+trap cleanup_on_error ERR
 
 # Parse arguments
-MD_ONLY=false
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --md-only)
-      MD_ONLY=true
-      shift
-      ;;
-    -h|--help)
-      echo "Usage: $0 [OPTIONS]"
-      echo ""
-      echo "Options:"
-      echo "  --md-only    Stop after markdown conversion (for manual cleaning)"
-      echo "  -h, --help   Show this help message"
-      echo ""
-      echo "Full Pipeline Steps:"
-      echo "  1. Convert PDFs to markdown (Docling)"
-      echo "  2. Extract images from PDFs"
-      echo "  3. Upload batches to Gemini"
-      echo "  4. Monitor batch jobs until complete"
-      echo "  5. Download batch results"
-      echo "  6. Filter descriptions for relevance"
-      echo "  7. Integrate descriptions into markdown"
-      echo ""
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1"
-      echo "Use -h or --help for usage information"
-      exit 1
-      ;;
-  esac
-done
-
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}PDF Processing Pipeline${NC}"
-echo -e "${BLUE}========================================${NC}"
-echo ""
-
-# Check for PDFs
-if [ ! -d "$TO_PROCESS_DIR" ] || [ -z "$(ls -A $TO_PROCESS_DIR/*.pdf 2>/dev/null)" ]; then
-  echo -e "${RED}❌ No PDFs found in $TO_PROCESS_DIR/${NC}"
-  echo "   Place PDF files in $TO_PROCESS_DIR/ to begin"
-  exit 1
-fi
-
-PDF_COUNT=$(ls -1 $TO_PROCESS_DIR/*.pdf 2>/dev/null | wc -l)
-echo -e "${GREEN}✅ Found $PDF_COUNT PDF(s) to process${NC}"
-echo ""
-
-################################################################################
-# Step 1: Convert PDFs to Markdown with Docling
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 1: Converting PDFs to Markdown${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-python3 batch_docling_converter.py "$TO_PROCESS_DIR" "$PROCESSED_DIR"
-
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Docling conversion failed${NC}"
-  exit 1
-fi
-
-echo ""
-echo -e "${GREEN}✅ Step 1 complete: Markdown files created in $PROCESSED_DIR/${NC}"
-echo -e "${GREEN}✅ Images extracted to images/${NC}"
-echo -e "${GREEN}✅ PDFs moved to pdfs_processed/${NC}"
-echo ""
-
-# If --md-only flag is set, stop here
-if [ "$MD_ONLY" = true ]; then
-  echo -e "${YELLOW}⏸️  Stopped after markdown conversion (--md-only flag)${NC}"
-  echo ""
-  echo "Next steps:"
-  echo "  1. Review/clean markdown files in $PROCESSED_DIR/"
-  echo "  2. Run './run_pipeline.sh' (without --md-only) to continue"
-  echo ""
-  exit 0
-fi
-
-# Check if we need PDFs for image extraction
-if [ ! -d "pdfs_processed" ] || [ -z "$(ls -A pdfs_processed/*.pdf 2>/dev/null)" ]; then
-  echo -e "${RED}❌ No PDFs found in pdfs_processed/ for image extraction${NC}"
-  echo "   PDFs should have been moved there by the converter"
-  exit 1
-fi
-
-################################################################################
-# Step 2: Extract images and create batch requests
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 2: Extracting images and creating batches${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-# Temporarily copy PDFs back to to_process for image extraction
-echo "Preparing PDFs for image extraction..."
-cp pdfs_processed/*.pdf "$TO_PROCESS_DIR/"
-
-python3 image_description_batch_preparer.py --mode "$MODE"
-
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Image extraction failed${NC}"
-  # Clean up copied PDFs
-  rm -f "$TO_PROCESS_DIR"/*.pdf
-  exit 1
-fi
-
-# Clean up - move PDFs back to pdfs_processed
-echo "Cleaning up..."
-mv "$TO_PROCESS_DIR"/*.pdf pdfs_processed/ 2>/dev/null || true
-
-echo ""
-echo -e "${GREEN}✅ Step 2 complete: Batch files created${NC}"
-echo ""
-
-################################################################################
-# Step 3: Upload batches to Gemini
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 3: Uploading batches to Gemini${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-python3 gemini_batch_uploader.py "$MODE"
-
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Batch upload failed${NC}"
-  exit 1
-fi
-
-echo ""
-echo -e "${GREEN}✅ Step 3 complete: Batches uploaded${NC}"
-echo ""
-
-################################################################################
-# Step 4: Monitor batch jobs until complete
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 4: Monitoring batch jobs${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-MAX_CHECKS=20
-CHECK_INTERVAL=30
-check_count=0
-
-while [ $check_count -lt $MAX_CHECKS ]; do
-  check_count=$((check_count + 1))
-  echo "Check $check_count/$MAX_CHECKS..."
-
-  # Run monitor and capture output
-  if python3 gemini_batch_monitor.py "$MODE" | grep -q "All batch jobs completed successfully"; then
-    echo ""
-    echo -e "${GREEN}✅ Step 4 complete: All batch jobs succeeded${NC}"
-    echo ""
-    break
-  fi
-
-  if [ $check_count -lt $MAX_CHECKS ]; then
-    echo "Waiting ${CHECK_INTERVAL}s before next check..."
-    sleep $CHECK_INTERVAL
-  else
-    echo -e "${RED}❌ Batch jobs did not complete within expected time${NC}"
-    echo "   Run 'python3 gemini_batch_monitor.py $MODE' to check status"
-    echo "   Then resume with: python3 gemini_batch_downloader.py $MODE"
+if [ $# -lt 2 ]; then
+    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size]"
+    error "Example: $0 27000 30000 500"
     exit 1
-  fi
+fi
+
+MIN_DOC_ID=$1
+MAX_DOC_ID=$2
+BATCH_SIZE=${3:-500}  # Default to 500 if not specified
+
+# Validate arguments
+if ! [[ "$MIN_DOC_ID" =~ ^[0-9]+$ ]] || ! [[ "$MAX_DOC_ID" =~ ^[0-9]+$ ]]; then
+    error "min_doc_id and max_doc_id must be integers"
+    exit 1
+fi
+
+if [ "$MIN_DOC_ID" -ge "$MAX_DOC_ID" ]; then
+    error "min_doc_id must be less than max_doc_id"
+    exit 1
+fi
+
+if ! [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] || [ "$BATCH_SIZE" -le 0 ]; then
+    error "batch_size must be a positive integer"
+    exit 1
+fi
+
+# Check required commands
+for cmd in python3; do
+    if ! command_exists "$cmd"; then
+        error "Required command not found: $cmd"
+        exit 1
+    fi
 done
 
-################################################################################
-# Step 5: Download batch results
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 5: Downloading batch results${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# Display configuration
+log "=========================================="
+log "PDF Processing Pipeline"
+log "=========================================="
+info "Document ID range: $MIN_DOC_ID to $MAX_DOC_ID"
+info "Batch size: $BATCH_SIZE documents"
+info "Working directory: $(pwd)"
+log "=========================================="
 echo ""
 
-python3 gemini_batch_downloader.py "$MODE"
-
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Batch download failed${NC}"
-  exit 1
-fi
-
-echo ""
-echo -e "${GREEN}✅ Step 5 complete: Results downloaded${NC}"
-echo ""
-
-################################################################################
-# Step 6: Filter descriptions for relevance
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 6: Filtering descriptions${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-python3 image_description_filter.py
+# Step 1: Fetch documents
+log "STEP 1: Fetching documents (ID range: $MIN_DOC_ID - $MAX_DOC_ID)"
+python3 1_fetch_documents.py \
+    --min-doc-id "$MIN_DOC_ID" \
+    --max-doc-id "$MAX_DOC_ID"
 
 if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Description filtering failed${NC}"
-  exit 1
+    error "Document fetching failed"
+    exit 1
 fi
 
-echo ""
-echo -e "${GREEN}✅ Step 6 complete: Descriptions filtered${NC}"
-echo ""
-
-################################################################################
-# Step 7: Integrate descriptions into markdown
-################################################################################
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 7: Integrating descriptions into markdown${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+log "✓ Document fetching complete"
 echo ""
 
-python3 image_description_integrator.py --overwrite
-
-if [ $? -ne 0 ]; then
-  echo -e "${RED}❌ Integration failed${NC}"
-  exit 1
+# Count total PDFs to process
+TOTAL_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$TOTAL_PDFS" -eq 0 ]; then
+    warn "No PDFs found to process. Exiting."
+    exit 0
 fi
 
-echo ""
-echo -e "${GREEN}✅ Step 7 complete: Descriptions integrated${NC}"
+info "Found $TOTAL_PDFS PDFs to process"
+NUM_BATCHES=$(( (TOTAL_PDFS + BATCH_SIZE - 1) / BATCH_SIZE ))
+info "Will process in $NUM_BATCHES batch(es) of up to $BATCH_SIZE documents each"
 echo ""
 
-################################################################################
-# Pipeline Complete
-################################################################################
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}🎉 Pipeline Complete!${NC}"
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# Process in batches
+BATCH_NUM=1
+PROCESSED_COUNT=0
+
+while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
+    log "=========================================="
+    log "BATCH $BATCH_NUM/$NUM_BATCHES"
+    log "=========================================="
+
+    # Count remaining PDFs
+    REMAINING_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_BATCH_SIZE=$(( REMAINING_PDFS < BATCH_SIZE ? REMAINING_PDFS : BATCH_SIZE ))
+
+    info "Processing $CURRENT_BATCH_SIZE documents in this batch"
+    info "Progress: $PROCESSED_COUNT/$TOTAL_PDFS documents processed so far"
+    echo ""
+
+    # Step 2: Convert PDFs to Markdown
+    log "STEP 2: Converting PDFs to Markdown (batch $BATCH_NUM)"
+
+    # Create a temporary marker to track which PDFs are in this batch
+    BATCH_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | head -n "$BATCH_SIZE")
+    BATCH_PDF_COUNT=$(echo "$BATCH_PDFS" | grep -c "doc_" || true)
+
+    if [ "$BATCH_PDF_COUNT" -eq 0 ]; then
+        warn "No PDFs left to process in this batch"
+        break
+    fi
+
+    python3 2_batch_convert_pdfs.py \
+        data/input \
+        data/processed \
+        --batch-size 2 \
+        --extract-images
+
+    if [ $? -ne 0 ]; then
+        error "PDF conversion failed for batch $BATCH_NUM"
+        exit 1
+    fi
+
+    log "✓ PDF conversion complete for batch $BATCH_NUM"
+    echo ""
+
+    # Step 3: Image Description Pipeline
+    log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
+
+    # 3a: Prepare image batches
+    log "  3a: Preparing image batches..."
+    python3 3a_prepare_image_batches.py
+
+    # 3b: Upload batches to Gemini
+    log "  3b: Uploading batches to Gemini..."
+    python3 3b_upload_batches.py
+
+    # 3c: Monitor batch progress
+    log "  3c: Monitoring batch progress..."
+    python3 3c_monitor_batches.py
+
+    # 3d: Download results
+    log "  3d: Downloading batch results..."
+    python3 3d_download_batch_results.py
+
+    log "✓ Image description pipeline complete for batch $BATCH_NUM"
+    echo ""
+
+    # Step 4: Filter Pipeline
+    log "STEP 4: Running filter pipeline (batch $BATCH_NUM)"
+
+    # 4a: Prepare filter batches
+    log "  4a: Preparing filter batches..."
+    python3 4a_prepare_filter_batches.py
+
+    # 4b: Upload filter batches
+    log "  4b: Uploading filter batches..."
+    python3 4b_upload_filter_batches.py
+
+    # 4c: Monitor filter progress
+    log "  4c: Monitoring filter progress..."
+    python3 4c_monitor_filter_batches.py
+
+    # 4d: Download filter results
+    log "  4d: Downloading filter results..."
+    python3 4d_download_filter_results.py
+
+    log "✓ Filter pipeline complete for batch $BATCH_NUM"
+    echo ""
+
+    # Step 5: Integrate descriptions
+    log "STEP 5: Integrating image descriptions (batch $BATCH_NUM)"
+    python3 5_integrate_descriptions.py
+
+    if [ $? -ne 0 ]; then
+        error "Description integration failed for batch $BATCH_NUM"
+        exit 1
+    fi
+
+    log "✓ Description integration complete for batch $BATCH_NUM"
+    echo ""
+
+    # Step 6: Upload to S3 and Supabase
+    log "STEP 6: Uploading to S3 and Supabase (batch $BATCH_NUM)"
+    python3 5a_upload.py
+
+    if [ $? -ne 0 ]; then
+        error "Upload failed for batch $BATCH_NUM"
+        exit 1
+    fi
+
+    log "✓ Upload complete for batch $BATCH_NUM"
+    echo ""
+
+    # Step 7: Cleanup
+    log "STEP 7: Cleaning up batch $BATCH_NUM"
+
+    # Delete .generated directory
+    if [ -d ".generated" ]; then
+        log "  Removing .generated directory..."
+        rm -rf .generated
+        log "  ✓ Removed .generated"
+    fi
+
+    # Delete images directory
+    if [ -d "data/images" ]; then
+        log "  Removing data/images directory..."
+        rm -rf data/images/*
+        log "  ✓ Cleared data/images"
+    fi
+
+    # Delete the PDFs that were just processed
+    # Only delete PDFs that have corresponding markdown files in data/processed
+    log "  Removing processed PDFs..."
+    DELETED_COUNT=0
+    for pdf in data/input/doc_*.pdf; do
+        if [ -f "$pdf" ]; then
+            # Extract document ID
+            DOC_ID=$(basename "$pdf" .pdf)
+            # Check if corresponding markdown exists
+            if [ -f "data/processed/${DOC_ID}.md" ]; then
+                rm -f "$pdf"
+                DELETED_COUNT=$((DELETED_COUNT + 1))
+            fi
+        fi
+    done
+    log "  ✓ Removed $DELETED_COUNT processed PDFs"
+
+    log "✓ Cleanup complete for batch $BATCH_NUM"
+    echo ""
+
+    # Update counters
+    PROCESSED_COUNT=$((PROCESSED_COUNT + CURRENT_BATCH_SIZE))
+    BATCH_NUM=$((BATCH_NUM + 1))
+
+    # Check if there are more PDFs to process
+    REMAINING_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$REMAINING_PDFS" -eq 0 ]; then
+        log "All PDFs processed!"
+        break
+    fi
+
+    # Brief pause between batches
+    log "Pausing 10 seconds before next batch..."
+    sleep 10
+    echo ""
+done
+
+# Final summary
+log "=========================================="
+log "PIPELINE COMPLETE"
+log "=========================================="
+info "Total documents processed: $PROCESSED_COUNT"
+info "Total batches: $BATCH_NUM"
+log "=========================================="
 echo ""
-echo "📊 View processing log:"
-echo "   python3 view_processing_log.py --summary"
-echo ""
-echo "📁 Output locations:"
-echo "   • Markdown files:          processed/"
-echo "   • Enhanced markdown:       processed_images/"
-echo "   • Extracted images:        images/"
-echo "   • Processed PDFs:          pdfs_processed/"
-echo "   • Processing log:          processing_log.csv"
-echo ""
+
+log "✓ All done! Pipeline completed successfully."

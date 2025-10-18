@@ -71,9 +71,9 @@ download:
 
 # Paths
 paths:
-  input_folder: "to_process"
-  output_folder: "processed"
-  metadata_db: "to_process/metadata.db"
+  input_folder: "data/to_process"
+  output_folder: "data/processed"
+  metadata_db: "data/to_process/metadata.db"
 
 # Logging
 logging:

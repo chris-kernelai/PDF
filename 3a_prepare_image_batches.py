@@ -271,10 +271,10 @@ def process_extracted_images(
 ) -> bool:
     """
     Process pre-extracted images and create batch files.
-    Only processes images for documents that have corresponding markdown files in processed/.
+    Only processes images for documents that have corresponding markdown files in data/processed/.
 
     Args:
-        images_folder: Folder containing extracted images (images/)
+        images_folder: Folder containing extracted images (data/images/)
         output_folder: Output folder for batch files
         mode: 'developer' or 'vertex'
         batch_size: Number of images per batch file
@@ -287,8 +287,8 @@ def process_extracted_images(
     batches_dir = output_folder / "image_description_batches"
     batches_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always check against processed/ folder to ensure documents are fully converted
-    processed_folder = Path("processed")
+    # Always check against data/processed/ folder to ensure documents are fully converted
+    processed_folder = Path("data/processed")
 
     # Find all document folders
     all_doc_folders = [d for d in images_folder.iterdir() if d.is_dir() and not d.name.startswith('.')]
@@ -448,8 +448,8 @@ def main():
     parser.add_argument(
         "--images-folder",
         type=Path,
-        default=Path("images"),
-        help="Folder containing extracted images (default: images)",
+        default=Path("data/images"),
+        help="Folder containing extracted images (default: data/images)",
     )
     parser.add_argument(
         "--output-folder",

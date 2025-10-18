@@ -63,11 +63,11 @@ def main():
 
     # Define directories to check
     directories = {
-        'PDFs to Process': 'to_process',
-        'Processed Markdown': 'processed',
-        'Raw Markdown': 'processed_raw',
-        'Processed PDFs (archive)': 'pdfs_processed',
-        'Images': 'images',
+        'PDFs to Process': 'data/to_process',
+        'Processed Markdown': 'data/processed',
+        'Raw Markdown': 'data/processed_raw',
+        'Processed PDFs (archive)': 'data/pdfs_processed',
+        'Images': 'data/images',
         'Generated Files': '.generated',
     }
 
@@ -117,7 +117,7 @@ def main():
     print()
 
     # Check for metadata database
-    db_path = 'to_process/metadata.db'
+    db_path = 'data/to_process/metadata.db'
     if os.path.exists(db_path):
         db_size = os.path.getsize(db_path) / (1024 * 1024)  # MB
         print(f"{'Metadata Database':30} ✓ ({db_size:.2f} MB)")
