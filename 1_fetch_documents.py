@@ -107,6 +107,7 @@ class DocumentFetcher:
             "documents_skipped_has_both_reps": 0,
             "documents_downloaded": 0,
             "documents_failed": 0,
+            "documents_rejected_not_pdf": 0,
             "filings_found": 0,
             "slides_found": 0,
         }
@@ -539,6 +540,45 @@ class DocumentFetcher:
 
         return url_map
 
+    async def _verify_pdf(self, pdf_path: Path) -> bool:
+        """
+        Verify that a downloaded file is actually a PDF.
+
+        Args:
+            pdf_path: Path to the file to verify.
+
+        Returns:
+            True if file is a valid PDF, False otherwise.
+        """
+        try:
+            import subprocess
+
+            # Use the 'file' command to check MIME type
+            result = subprocess.run(
+                ['file', '--mime-type', '-b', str(pdf_path)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            mime_type = result.stdout.strip()
+
+            # Check if it's a PDF
+            if mime_type.startswith('application/pdf'):
+                return True
+
+            # If not PDF, log what it actually is
+            self.logger.warning(f"File {pdf_path.name} is {mime_type}, not application/pdf")
+            return False
+
+        except subprocess.TimeoutExpired:
+            self.logger.warning(f"Timeout verifying file type for {pdf_path.name}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Could not verify file type for {pdf_path.name}: {e}")
+            # If verification fails, assume it's okay to be safe
+            return True
+
     async def _download_pdf(
         self, session: aiohttp.ClientSession, document_id: int, pdf_url: str
     ) -> Optional[Path]:
@@ -565,6 +605,15 @@ class DocumentFetcher:
 
                     async with aiofiles.open(pdf_path, "wb") as f:
                         await f.write(await response.read())
+
+                    # Verify it's actually a PDF file
+                    if not await self._verify_pdf(pdf_path):
+                        self.logger.warning(
+                            f"Downloaded file for doc {document_id} is not a valid PDF, deleting"
+                        )
+                        pdf_path.unlink()
+                        self.stats["documents_rejected_not_pdf"] += 1
+                        return None
 
                     return pdf_path
                 else:
@@ -626,8 +675,10 @@ class DocumentFetcher:
                         self.stats["documents_downloaded"] += 1
                         self.logger.info(f"Successfully downloaded {pdf_path.name}")
                     else:
+                        # Check if it was rejected as non-PDF (warning already logged)
+                        # If download returned None, it either failed or was rejected
                         self.metadata.mark_failed(
-                            document_id, "Download failed", "download_failed"
+                            document_id, "Download failed or file not a valid PDF", "download_failed"
                         )
                         self.stats["documents_failed"] += 1
 
@@ -714,6 +765,8 @@ class DocumentFetcher:
         if download_pdfs:
             self.logger.info(f"  PDFs downloaded: {self.stats['documents_downloaded']}")
             self.logger.info(f"  Downloads failed: {self.stats['documents_failed']}")
+            if self.stats['documents_rejected_not_pdf'] > 0:
+                self.logger.info(f"    - Rejected (not valid PDF): {self.stats['documents_rejected_not_pdf']}")
         self.logger.info("=" * 60)
 
     async def download_pending(self):

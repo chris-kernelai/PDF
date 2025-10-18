@@ -112,7 +112,7 @@ log "✓ Document fetching complete"
 echo ""
 
 # Count total PDFs to process
-TOTAL_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$TOTAL_PDFS" -eq 0 ]; then
     warn "No PDFs found to process. Exiting."
     exit 0
@@ -133,7 +133,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
     log "=========================================="
 
     # Count remaining PDFs
-    REMAINING_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+    REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
     CURRENT_BATCH_SIZE=$(( REMAINING_PDFS < BATCH_SIZE ? REMAINING_PDFS : BATCH_SIZE ))
 
     info "Processing $CURRENT_BATCH_SIZE documents in this batch"
@@ -144,7 +144,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
     log "STEP 2: Converting PDFs to Markdown (batch $BATCH_NUM)"
 
     # Create a temporary marker to track which PDFs are in this batch
-    BATCH_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | head -n "$BATCH_SIZE")
+    BATCH_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | head -n "$BATCH_SIZE")
     BATCH_PDF_COUNT=$(echo "$BATCH_PDFS" | grep -c "doc_" || true)
 
     if [ "$BATCH_PDF_COUNT" -eq 0 ]; then
@@ -153,7 +153,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
     fi
 
     python3 2_batch_convert_pdfs.py \
-        data/input \
+        data/to_process \
         data/processed \
         --batch-size 2 \
         --extract-images
@@ -255,7 +255,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
     # Only delete PDFs that have corresponding markdown files in data/processed
     log "  Removing processed PDFs..."
     DELETED_COUNT=0
-    for pdf in data/input/doc_*.pdf; do
+    for pdf in data/to_process/doc_*.pdf; do
         if [ -f "$pdf" ]; then
             # Extract document ID
             DOC_ID=$(basename "$pdf" .pdf)
@@ -276,7 +276,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
     BATCH_NUM=$((BATCH_NUM + 1))
 
     # Check if there are more PDFs to process
-    REMAINING_PDFS=$(find data/input -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+    REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$REMAINING_PDFS" -eq 0 ]; then
         log "All PDFs processed!"
         break

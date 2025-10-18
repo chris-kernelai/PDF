@@ -47,21 +47,38 @@ def validate_environment(mode: str) -> None:
         if not os.environ.get("GCP_LOCATION"):
             errors.append("❌ GCP_LOCATION not set (required for Vertex AI mode)")
 
-        # Check if gcloud is authenticated
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if not result.stdout.strip():
-                errors.append("❌ No active Google Cloud account found. Run 'gcloud auth login' first")
-        except FileNotFoundError:
-            errors.append("❌ gcloud CLI not found. Install Google Cloud SDK first")
-        except Exception as e:
-            errors.append(f"⚠️  Could not verify gcloud authentication: {e}")
+        # Check if authenticated (either gcloud or service account)
+        has_gcloud_auth = False
+        has_service_account = False
+
+        # Check for service account key file
+        if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+            key_file = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+            if os.path.exists(key_file):
+                has_service_account = True
+
+        # Check for gcloud authentication
+        if not has_service_account:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.stdout.strip():
+                    has_gcloud_auth = True
+            except FileNotFoundError:
+                errors.append("❌ gcloud CLI not found. Install Google Cloud SDK first")
+            except Exception as e:
+                errors.append(f"⚠️  Could not verify gcloud authentication: {e}")
+
+        # Require either authentication method
+        if not has_gcloud_auth and not has_service_account:
+            errors.append("❌ No authentication found. Either:")
+            errors.append("   1. Run 'gcloud auth login', OR")
+            errors.append("   2. Set GOOGLE_APPLICATION_CREDENTIALS in .env")
 
     if errors:
         print("\n" + "="*60)
