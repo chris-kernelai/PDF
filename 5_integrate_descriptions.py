@@ -507,14 +507,14 @@ def main():
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=Path("processed"),
-        help="Directory containing original markdown files (default: processed)",
+        default=Path("data/processed"),
+        help="Directory containing original markdown files (default: data/processed)",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("processed_images"),
-        help="Directory to save enhanced markdown files (default: processed_images)",
+        default=Path("data/processed_images"),
+        help="Directory to save enhanced markdown files (default: data/processed_images)",
     )
     parser.add_argument(
         "--descriptions-dir",
@@ -620,6 +620,30 @@ def main():
 
     # Print summary
     integrator.print_summary()
+
+    # Cleanup: Remove .generated directory and data/images after successful integration
+    if success:
+        import shutil
+
+        # Clean up .generated directory
+        generated_dir = Path(".generated")
+        if generated_dir.exists():
+            try:
+                logger.info(f"🧹 Cleaning up .generated directory...")
+                shutil.rmtree(generated_dir)
+                logger.info(f"✅ Removed .generated directory")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to remove .generated directory: {e}")
+
+        # Clean up data/images directory
+        images_dir = Path("data/images")
+        if images_dir.exists():
+            try:
+                logger.info(f"🧹 Cleaning up data/images directory...")
+                shutil.rmtree(images_dir)
+                logger.info(f"✅ Removed data/images directory")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to remove data/images directory: {e}")
 
     return 0 if success else 1
 

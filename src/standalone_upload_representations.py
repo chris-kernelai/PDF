@@ -37,7 +37,11 @@ class DocumentRepresentationUploader:
         s3_bucket: Optional[str] = None,
     ):
         # Load from environment variables with fallback to parameters
-        self.aws_profile = aws_profile or os.getenv("AWS_PROFILE", "production")
+        # If AWS_ACCESS_KEY_ID is set, don't use a profile (use env credentials directly)
+        if os.getenv("AWS_ACCESS_KEY_ID"):
+            self.aws_profile = aws_profile  # None unless explicitly passed
+        else:
+            self.aws_profile = aws_profile or os.getenv("AWS_PROFILE", "production")
         self.aws_region = aws_region or os.getenv("AWS_REGION", "eu-west-2")
         self.supabase_url = supabase_url or os.getenv("SUPABASE_URL")
         self.supabase_key = supabase_key or os.getenv("SUPABASE_KEY")
