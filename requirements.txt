@@ -1,9 +1,16 @@
+# Core pipeline packages
+docling
+psycopg2-binary
+google-cloud-aiplatform
+aiohttp
+
+# AWS and database
 aioboto3
-airtop==0.0.49
-annotated-types==0.7.0
-anyio==4.10.0
 asyncpg
 boto3
+
+# Other dependencies
+airtop==0.0.49
 appnope==0.1.4
 asttokens==3.0.0
 certifi==2025.8.3

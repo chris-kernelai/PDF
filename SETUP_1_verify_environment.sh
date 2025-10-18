@@ -41,10 +41,20 @@ if [ -d "venv" ]; then
     source venv/bin/activate
 
     echo -n "Checking Python packages... "
-    if python3 -c "import docling, boto3, psycopg2, google.cloud.aiplatform" 2>/dev/null; then
+    MISSING_PACKAGES=""
+
+    # Check each package individually
+    python3 -c "import docling" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES docling"
+    python3 -c "import boto3" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES boto3"
+    python3 -c "import psycopg2" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES psycopg2"
+    python3 -c "import google.cloud.aiplatform" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES google-cloud-aiplatform"
+    python3 -c "import aiohttp" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES aiohttp"
+    python3 -c "import python_dotenv" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES python-dotenv"
+
+    if [ -z "$MISSING_PACKAGES" ]; then
         echo -e "${GREEN}✓${NC}"
     else
-        echo -e "${RED}✗ Missing packages${NC}"
+        echo -e "${RED}✗ Missing:$MISSING_PACKAGES${NC}"
         echo "  Run: pip install -r requirements.txt"
         ERRORS=$((ERRORS + 1))
     fi
@@ -86,15 +96,20 @@ echo -n "Checking .env file... "
 if [ -f ".env" ]; then
     echo -e "${GREEN}✓${NC}"
 
-    # Check required variables
+    # Check required variables (checking actual variable names used in codebase)
     source .env
-    REQUIRED_VARS="AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY DB_HOST DB_USER GCP_PROJECT_ID LIBRARIAN_API_KEY"
+    REQUIRED_VARS="DB_HOST DB_USER GCP_PROJECT API_KEY"
     MISSING_VARS=""
     for var in $REQUIRED_VARS; do
         if [ -z "${!var}" ]; then
             MISSING_VARS="$MISSING_VARS $var"
         fi
     done
+
+    # Also accept AWS_PROFILE or AWS_ACCESS_KEY_ID
+    if [ -z "$AWS_PROFILE" ] && [ -z "$AWS_ACCESS_KEY_ID" ]; then
+        MISSING_VARS="$MISSING_VARS AWS_PROFILE/AWS_ACCESS_KEY_ID"
+    fi
 
     if [ -n "$MISSING_VARS" ]; then
         echo -e "${RED}  ✗ Missing variables:$MISSING_VARS${NC}"

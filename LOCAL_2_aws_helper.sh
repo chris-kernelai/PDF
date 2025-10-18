@@ -169,6 +169,17 @@ case "$1" in
             scp -i "$PEM_KEY" requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
         fi
 
+        # Fix GOOGLE_APPLICATION_CREDENTIALS path in remote .env
+        echo "Fixing GOOGLE_APPLICATION_CREDENTIALS path in remote .env..."
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
+cd ~/pdf_pipeline
+if [ -f ".env" ] && [ -f "gcp-service-account-key.json" ]; then
+    # Update the path to point to the remote location
+    sed -i 's|GOOGLE_APPLICATION_CREDENTIALS=.*|GOOGLE_APPLICATION_CREDENTIALS=~/pdf_pipeline/gcp-service-account-key.json|g' .env
+    echo "✓ Updated GOOGLE_APPLICATION_CREDENTIALS path"
+fi
+ENDSSH
+
         # Set proper permissions on remote
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod 600 .env gcp-service-account-key.json 2>/dev/null || true"
 
@@ -184,16 +195,21 @@ case "$1" in
         echo -e "${BLUE}Setting up AWS instance from scratch...${NC}"
         echo ""
 
-        # First deploy config
-        echo -e "${BLUE}Step 1: Deploying configuration...${NC}"
+        # First, create the directory on AWS
+        echo -e "${BLUE}Step 1: Creating directory on AWS...${NC}"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ~/pdf_pipeline"
+        echo -e "${GREEN}✅ Directory created${NC}"
+
+        echo ""
+        echo -e "${BLUE}Step 2: Deploying configuration...${NC}"
         "$0" deploy-config
 
         echo ""
-        echo -e "${BLUE}Step 2: Syncing code...${NC}"
+        echo -e "${BLUE}Step 3: Syncing code...${NC}"
         "$0" sync-code
 
         echo ""
-        echo -e "${BLUE}Step 3: Installing dependencies on instance...${NC}"
+        echo -e "${BLUE}Step 4: Installing dependencies on instance...${NC}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 
