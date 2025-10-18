@@ -6,10 +6,46 @@
 # This script runs the entire PDF processing pipeline in batches of 500 documents
 # to avoid GPU memory overflow. It processes documents within a specified ID range.
 #
-# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size]
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--background]
 #
-# Example: ./run_pipeline.sh 27000 30000 500
+# Examples:
+#   ./run_pipeline.sh 27000 30000 500             # Run interactively
+#   ./run_pipeline.sh 27000 30000 500 --background # Run in background with nohup
 ################################################################################
+
+# Check if running in background mode
+BACKGROUND_MODE=false
+if [[ "${@: -1}" == "--background" ]] || [[ "${@: -1}" == "-b" ]]; then
+    BACKGROUND_MODE=true
+    # Remove the flag from arguments
+    set -- "${@:1:$(($#-1))}"
+fi
+
+# If background mode and this is the parent process, relaunch with nohup
+if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
+    LOG_FILE="pipeline_$(date +%Y%m%d_%H%M%S).log"
+    echo "🚀 Starting pipeline in background mode..."
+    echo "📝 Log file: $LOG_FILE"
+    echo ""
+
+    # Relaunch with nohup
+    PIPELINE_CHILD=1 nohup "$0" "$@" > "$LOG_FILE" 2>&1 &
+    PID=$!
+
+    echo "✅ Pipeline started with PID: $PID"
+    echo ""
+    echo "Monitor progress:"
+    echo "  tail -f $LOG_FILE"
+    echo ""
+    echo "Check if running:"
+    echo "  ps aux | grep $PID"
+    echo ""
+    echo "Kill if needed:"
+    echo "  kill $PID"
+    echo ""
+
+    exit 0
+fi
 
 set -e  # Exit on error
 set -u  # Exit on undefined variable
@@ -54,8 +90,11 @@ trap cleanup_on_error ERR
 
 # Parse arguments
 if [ $# -lt 2 ]; then
-    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size]"
-    error "Example: $0 27000 30000 500"
+    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size] [--background|-b]"
+    echo ""
+    echo "Examples:"
+    echo "  $0 27000 30000 500              # Run interactively"
+    echo "  $0 27000 30000 500 --background # Run in background with nohup"
     exit 1
 fi
 
