@@ -6,31 +6,45 @@
 # This script runs the entire PDF processing pipeline in batches of 500 documents
 # to avoid GPU memory overflow. It processes documents within a specified ID range.
 #
-# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--background] [--skip-download]
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--batch-size <workers>] [--background] [--skip-download] [--cpu]
 #
 # Examples:
-#   ./run_pipeline.sh 27000 30000 500             # Run interactively
-#   ./run_pipeline.sh 27000 30000 500 --background # Run in background with nohup
-#   ./run_pipeline.sh 27000 30000 500 --skip-download # Skip document fetching step
+#   ./run_pipeline.sh 27000 30000 500                    # Run interactively
+#   ./run_pipeline.sh 27000 30000 500 --batch-size 4     # Use 4 parallel workers
+#   ./run_pipeline.sh 27000 30000 500 --background       # Run in background with nohup
+#   ./run_pipeline.sh 27000 30000 500 --skip-download    # Skip document fetching step
+#   ./run_pipeline.sh 27000 30000 500 --cpu --batch-size 8  # CPU mode with 8 workers
 ################################################################################
 
 # Parse flags
 BACKGROUND_MODE=false
 SKIP_DOWNLOAD=false
+CPU_MODE=false
+WORKERS=2  # Default to 2 workers
 ARGS=()
 
-for arg in "$@"; do
-    case $arg in
+i=1
+while [ $i -le $# ]; do
+    arg="${!i}"
+    case "$arg" in
         --background|-b)
             BACKGROUND_MODE=true
             ;;
         --skip-download|-s)
             SKIP_DOWNLOAD=true
             ;;
+        --cpu|-c)
+            CPU_MODE=true
+            ;;
+        --batch-size)
+            ((i++))
+            WORKERS="${!i}"
+            ;;
         *)
             ARGS+=("$arg")
             ;;
     esac
+    ((i++))
 done
 
 # Reset positional parameters to non-flag arguments
@@ -46,6 +60,8 @@ if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
     # Relaunch with nohup, passing through flags
     EXTRA_FLAGS=""
     [ "$SKIP_DOWNLOAD" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --skip-download"
+    [ "$CPU_MODE" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --cpu"
+    [ "$WORKERS" != "2" ] && EXTRA_FLAGS="$EXTRA_FLAGS --batch-size $WORKERS"
     PIPELINE_CHILD=1 nohup "$0" "$@" $EXTRA_FLAGS > "$LOG_FILE" 2>&1 &
     PID=$!
 
@@ -150,6 +166,8 @@ log "PDF Processing Pipeline"
 log "=========================================="
 info "Document ID range: $MIN_DOC_ID to $MAX_DOC_ID"
 info "Batch size: $BATCH_SIZE documents"
+info "Parallel workers: $WORKERS"
+info "Mode: $([ "$CPU_MODE" = true ] && echo "CPU" || echo "GPU")"
 info "Skip download: $SKIP_DOWNLOAD"
 info "Working directory: $(pwd)"
 log "=========================================="
@@ -232,11 +250,15 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
             break
         fi
 
+        GPU_FLAG=""
+        [ "$CPU_MODE" = true ] && GPU_FLAG="--no-gpu"
+
         python3 2_batch_convert_pdfs.py \
             data/to_process \
             data/processed \
-            --batch-size 2 \
-            --extract-images
+            --batch-size "$WORKERS" \
+            --extract-images \
+            $GPU_FLAG
 
         if [ $? -ne 0 ]; then
             error "PDF conversion failed for batch $BATCH_NUM"

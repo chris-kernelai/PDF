@@ -1,5 +1,5 @@
 # Core pipeline packages
-docling
+docling[easyocr]
 psycopg2-binary
 google-cloud-aiplatform
 google-generativeai
@@ -7,11 +7,9 @@ aiohttp
 aiofiles
 python-dotenv
 pyyaml
-Pillow
 aioboto3
 asyncpg
 boto3
 httpx
 pypdf
-easyocr
 cryptography
