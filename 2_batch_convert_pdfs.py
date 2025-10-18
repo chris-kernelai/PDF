@@ -23,6 +23,44 @@ from docling_converter import DoclingConverter
 from processing_logger import ProcessingLogger
 
 
+def wrap_long_lines(text: str, max_line_length: int = 10000) -> str:
+    """
+    Wrap lines that exceed the maximum length by inserting newlines.
+
+    Args:
+        text: Input text
+        max_line_length: Maximum allowed line length (default: 10000)
+
+    Returns:
+        Text with long lines wrapped
+    """
+    lines = text.split('\n')
+    wrapped_lines = []
+
+    for line in lines:
+        if len(line) <= max_line_length:
+            wrapped_lines.append(line)
+        else:
+            # Split long lines at word boundaries when possible
+            while len(line) > max_line_length:
+                # Try to find a space near the max length to break at
+                break_point = max_line_length
+                space_idx = line.rfind(' ', 0, max_line_length)
+
+                # If we found a space within reasonable distance, break there
+                if space_idx > max_line_length * 0.8:  # Within last 20% of max length
+                    break_point = space_idx + 1
+
+                wrapped_lines.append(line[:break_point])
+                line = line[break_point:]
+
+            # Add the remaining part
+            if line:
+                wrapped_lines.append(line)
+
+    return '\n'.join(wrapped_lines)
+
+
 def clean_repeating_characters(text: str) -> str:
     """
     Clean excessive repeating characters in markdown text.
@@ -107,16 +145,16 @@ def _process_single_pdf_worker(
         # Skip text files - they're not real PDFs
         if mime_type.startswith('text/'):
             error_msg = f"Skipping {pdf_file.name} - detected as text file, not a PDF"
-            return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
+            return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
 
         # Skip non-PDF files
         if not mime_type.startswith('application/pdf'):
             error_msg = f"Skipping {pdf_file.name} - not a PDF (detected as {mime_type})"
-            return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
+            return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
 
     except subprocess.TimeoutExpired:
         error_msg = f"Timeout detecting file type for {pdf_file.name}"
-        return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
+        return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
     except Exception as e:
         # If file type detection fails, try to proceed as PDF anyway
         pass
@@ -166,6 +204,9 @@ def _process_single_pdf_worker(
 
             # Clean repeating characters
             cleaned_markdown = clean_repeating_characters(raw_markdown)
+
+            # Wrap long lines (ensure no line exceeds 10,000 characters)
+            cleaned_markdown = wrap_long_lines(cleaned_markdown, max_line_length=10000)
 
             # Save raw version
             Path(raw_output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -589,16 +630,14 @@ class BatchDoclingConverter:
 
                 if output_path.exists():
                     self.logger.info("Skipping %s - output already exists", pdf_file.name)
-                    # Move the PDF to pdfs_processed even though we skipped it
+                    # Delete the PDF since output already exists
                     if self.remove_processed and pdf_file.exists():
                         try:
-                            processed_pdf_dir = Path("pdfs_processed")
-                            processed_pdf_dir.mkdir(exist_ok=True)
-                            dest_path = processed_pdf_dir / pdf_file.name
-                            pdf_file.rename(dest_path)
-                            self.logger.info("Moved skipped file to: %s", dest_path)
+                            pdf_file.unlink()
+                            self.stats["removed_files"] += 1
+                            self.logger.info("Deleted skipped file: %s", pdf_file.name)
                         except OSError as e:
-                            self.logger.warning("Failed to move skipped file %s: %s", pdf_file.name, e)
+                            self.logger.warning("Failed to delete skipped file %s: %s", pdf_file.name, e)
                     results.append((pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0))
                     continue
 
@@ -702,6 +741,25 @@ class BatchDoclingConverter:
         upload_tasks = []
 
         for input_path, _output_path, success, error_msg, image_count, _page_count, _processing_time in results:
+            # Handle files that were rejected during file type detection (empty output_path)
+            # These should be moved and marked as processed to avoid rechecking
+            if not _output_path or str(_output_path) == "" or _output_path == Path(""):
+                self.stats["failed_files"] += 1
+                self.logger.warning("Rejected non-PDF file: %s - %s", input_path.name, error_msg)
+
+                # Mark as processed so we don't check it again
+                self._mark_as_processed(input_path)
+
+                # Delete the rejected file to avoid rechecking (always delete invalid files)
+                if input_path.exists():
+                    try:
+                        input_path.unlink()
+                        self.stats["removed_files"] += 1
+                        self.logger.info("Deleted rejected non-PDF file: %s", input_path.name)
+                    except OSError as e:
+                        self.logger.warning("Failed to delete rejected file %s: %s", input_path.name, e)
+                continue
+
             # Track image count
             if success and image_count > 0:
                 self.stats["total_images_extracted"] += image_count
@@ -720,18 +778,15 @@ class BatchDoclingConverter:
                     if self.upload_enabled:
                         upload_tasks.append((input_path, _output_path))
                     else:
-                        # Move immediately if no upload needed
+                        # Delete immediately if no upload needed
                         if self.remove_processed:
                             try:
-                                processed_pdf_dir = Path("pdfs_processed")
-                                processed_pdf_dir.mkdir(exist_ok=True)
-                                dest_path = processed_pdf_dir / input_path.name
-                                input_path.rename(dest_path)
+                                input_path.unlink()
                                 self.stats["removed_files"] += 1
-                                self.logger.info("Moved processed file to: %s", dest_path)
+                                self.logger.info("Deleted processed file: %s", input_path.name)
                             except OSError as e:
                                 self.logger.warning(
-                                    "Failed to move processed file %s: %s",
+                                    "Failed to delete processed file %s: %s",
                                     input_path.name,
                                     e
                                 )
@@ -752,19 +807,16 @@ class BatchDoclingConverter:
                         upload_msg
                     )
 
-                # Move after upload attempt
-                should_move = self.remove_processed and upload_success
-                if should_move:
+                # Delete after successful upload
+                should_delete = self.remove_processed and upload_success
+                if should_delete:
                     try:
-                        processed_pdf_dir = Path("pdfs_processed")
-                        processed_pdf_dir.mkdir(exist_ok=True)
-                        dest_path = processed_pdf_dir / input_path.name
-                        input_path.rename(dest_path)
+                        input_path.unlink()
                         self.stats["removed_files"] += 1
-                        self.logger.info("Moved processed file to: %s", dest_path)
+                        self.logger.info("Deleted processed file: %s", input_path.name)
                     except OSError as e:
                         self.logger.warning(
-                            "Failed to move processed file %s: %s",
+                            "Failed to delete processed file %s: %s",
                             input_path.name,
                             e
                         )
@@ -781,7 +833,7 @@ class BatchDoclingConverter:
             self.logger.info("Uploaded: %d", self.stats["uploaded_files"])
             self.logger.info("Upload failed: %d", self.stats["upload_failed_files"])
         if self.remove_processed:
-            self.logger.info("Moved to pdfs_processed/: %d", self.stats["removed_files"])
+            self.logger.info("Deleted: %d", self.stats["removed_files"])
 
         return self.stats
 
@@ -1012,7 +1064,7 @@ def main():
         print(f"Uploaded: {stats['uploaded_files']}")
         print(f"Upload failed: {stats['upload_failed_files']}")
     if not args.keep_processed:
-        print(f"Moved to pdfs_processed/: {stats['removed_files']}")
+        print(f"Deleted: {stats['removed_files']}")
 
 
 if __name__ == "__main__":

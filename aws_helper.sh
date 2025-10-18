@@ -17,7 +17,7 @@
 ################################################################################
 
 # AWS Instance details
-INSTANCE_IP="52.53.182.181"
+INSTANCE_IP="3.101.131.195"
 INSTANCE_USER="ubuntu"
 PEM_KEY="PDF_key.pem"
 REMOTE_DIR="~/pdf_pipeline"

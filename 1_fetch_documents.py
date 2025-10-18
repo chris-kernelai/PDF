@@ -1,7 +1,8 @@
 """
 Document Fetcher
 
-Fetches non-US company filings and slides from the Librarian API and saves PDFs to to_process/ folder.
+Fetches non-US company filings and slides by querying PostgreSQL database directly,
+then downloads PDFs using the batch download API.
 """
 
 import asyncio
@@ -11,6 +12,8 @@ import os
 import yaml
 import logging
 import random
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -22,9 +25,9 @@ load_dotenv()
 
 
 class DocumentFetcher:
-    """Fetches documents from the Librarian API."""
+    """Fetches documents by querying PostgreSQL database directly."""
 
-    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42, max_doc_id: Optional[int] = None):
+    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42, min_doc_id: Optional[int] = None, max_doc_id: Optional[int] = None):
         """
         Initialize document fetcher.
 
@@ -33,6 +36,7 @@ class DocumentFetcher:
             limit: Maximum number of documents to fetch (None = no limit).
             randomize: Whether to randomize document order for sampling.
             random_seed: Random seed for reproducible sampling (default: 42).
+            min_doc_id: Minimum document ID to fetch (filter out documents with ID < this value).
             max_doc_id: Maximum document ID to fetch (filter out documents with ID > this value).
         """
         self.config = self._load_config(config_path)
@@ -56,10 +60,25 @@ class DocumentFetcher:
         self.limit = limit
         self.randomize = randomize
         self.random_seed = random_seed
+        self.min_doc_id = min_doc_id
         self.max_doc_id = max_doc_id
 
+        # Load completed documents from processing log
+        self.completed_doc_ids = self._load_completed_documents()
+
+        # Database connection parameters
+        self.db_config = {
+            "host": os.getenv("K_LIB_DB_HOST"),
+            "port": os.getenv("K_LIB_DB_PORT"),
+            "user": os.getenv("K_LIB_DB_USER"),
+            "password": os.getenv("K_LIB_DB_PASSWORD"),
+            "database": os.getenv("K_LIB_DB_NAME"),
+        }
+
+        if self.min_doc_id:
+            self.logger.info(f"Will filter documents with ID >= {self.min_doc_id}")
         if self.max_doc_id:
-            self.logger.info(f"Will filter out documents with ID > {self.max_doc_id}")
+            self.logger.info(f"Will filter documents with ID <= {self.max_doc_id}")
 
         if self.randomize:
             random.seed(self.random_seed)
@@ -71,6 +90,7 @@ class DocumentFetcher:
             "documents_found": 0,
             "documents_added": 0,
             "documents_skipped": 0,
+            "documents_skipped_completed": 0,
             "documents_downloaded": 0,
             "documents_failed": 0,
             "filings_found": 0,
@@ -96,6 +116,40 @@ class DocumentFetcher:
             ],
         )
         self.logger = logging.getLogger(__name__)
+
+    def _load_completed_documents(self) -> set:
+        """
+        Load document IDs that have been successfully converted from processing_log.csv.
+
+        Returns:
+            Set of document IDs (as strings) that have been successfully converted.
+        """
+        import csv
+
+        log_file = Path("processing_log.csv")
+        if not log_file.exists():
+            return set()
+
+        completed_ids = set()
+        try:
+            with open(log_file, 'r', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Only include documents that have completed conversion stage successfully
+                    if row.get('stage') == 'conversion' and row.get('status') == 'success':
+                        doc_id = row.get('doc_id', '')
+                        # Remove 'doc_' prefix if present
+                        if doc_id.startswith('doc_'):
+                            doc_id = doc_id[4:]
+                        if doc_id:
+                            completed_ids.add(doc_id)
+
+            if completed_ids:
+                self.logger.info(f"Loaded {len(completed_ids)} completed documents from processing log")
+            return completed_ids
+        except Exception as e:
+            self.logger.warning(f"Could not load completed documents from processing log: {e}")
+            return set()
 
     async def _make_request(
         self, session: aiohttp.ClientSession, endpoint: str, payload: Dict, method: str = "POST"
@@ -157,159 +211,133 @@ class DocumentFetcher:
 
         return None
 
-    async def fetch_companies(self, session: aiohttp.ClientSession) -> List[Dict]:
-        """
-        Fetch all non-US companies with pagination.
+    def _get_db_connection(self):
+        """Create database connection."""
+        return psycopg2.connect(
+            host=self.db_config["host"],
+            port=self.db_config["port"],
+            user=self.db_config["user"],
+            password=self.db_config["password"],
+            database=self.db_config["database"],
+            options="-c default_transaction_read_only=on",  # READ-ONLY mode
+        )
 
-        Args:
-            session: aiohttp session.
+    def fetch_companies_from_db(self) -> List[Dict]:
+        """
+        Fetch all non-US companies from database.
 
         Returns:
             List of company dictionaries.
         """
-        self.logger.info("Fetching non-US companies...")
-        all_companies = []
-        page = 1
-        page_size = self.config["download"]["company_page_size"]
+        self.logger.info("Fetching non-US companies from database...")
 
-        while True:
-            payload = {
-                "country": self.config["filters"]["countries"],
-                "page": page,
-                "page_size": page_size,
-            }
+        conn = self._get_db_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Build country filter
+                countries = self.config["filters"]["countries"]
 
-            self.logger.info(f"Fetching companies page {page}...")
-            response = await self._make_request(session, "companies/filter", payload)
+                cur.execute("""
+                    SELECT id, ticker, name, country
+                    FROM librarian.company
+                    WHERE country = ANY(%s::text[])
+                    ORDER BY id
+                """, (countries,))
 
-            if not response:
-                self.logger.error(f"Failed to fetch companies page {page}")
-                break
+                companies = cur.fetchall()
 
-            # Handle response structure: {"message": "...", "data": [...]}
-            if isinstance(response, dict) and "data" in response:
-                companies = response["data"] if isinstance(response["data"], list) else []
-                total = len(companies)  # API returns full page, not total count
-            else:
-                self.logger.error(f"Unexpected response structure: {response}")
-                break
+                # Convert to list of dicts
+                company_list = [dict(c) for c in companies]
 
-            if not companies:
-                break
+                self.stats["companies_found"] = len(company_list)
+                self.logger.info(f"Total companies found: {len(company_list)}")
+                return company_list
+        finally:
+            conn.close()
 
-            all_companies.extend(companies)
-            self.logger.info(f"Found {len(companies)} companies on page {page}")
-
-            # Check if there are more pages
-            if len(all_companies) >= total:
-                break
-
-            page += 1
-
-            # Rate limiting
-            await asyncio.sleep(self.config["download"]["rate_limit_delay"])
-
-        self.stats["companies_found"] = len(all_companies)
-        self.logger.info(f"Total companies found: {len(all_companies)}")
-        return all_companies
-
-    async def fetch_documents(
-        self, session: aiohttp.ClientSession, company_ids: List[int]
-    ) -> List[Dict]:
+    def fetch_documents_from_db(self, company_ids: List[int]) -> List[Dict]:
         """
-        Fetch documents for given company IDs with pagination.
+        Fetch documents for given company IDs from database.
 
         Args:
-            session: aiohttp session.
             company_ids: List of company IDs to fetch documents for.
 
         Returns:
             List of document dictionaries.
         """
-        self.logger.info(f"Fetching documents for {len(company_ids)} companies...")
-        all_documents = []
-        page = 1
-        page_size = self.config["download"]["document_page_size"]
+        self.logger.info(f"Fetching documents from database for {len(company_ids)} companies...")
 
-        while True:
-            # When randomizing, fetch more documents than limit to ensure diverse sample
-            # Don't stop early - we'll randomize and sample after fetching all
-            if self.limit and not self.randomize and len(all_documents) >= self.limit:
-                self.logger.info(f"Reached document limit of {self.limit}, stopping fetch")
-                break
+        conn = self._get_db_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Build query with filters
+                where_clauses = ["company_id = ANY(%s::int[])"]
+                params = [company_ids]
 
-            payload = {
-                "company_id": company_ids,
-                "document_type": self.config["filters"]["document_types"],
-                "page": page,
-                "page_size": page_size,
-            }
+                # Document type filter (cast to text to handle enum type)
+                doc_types = [dt.upper() for dt in self.config["filters"]["document_types"]]
+                where_clauses.append("document_type::text = ANY(%s::text[])")
+                params.append(doc_types)
 
-            # Add date range filters if specified
-            date_start = self.config["filters"]["date_range"].get("start")
-            date_end = self.config["filters"]["date_range"].get("end")
-            if date_start:
-                payload["filing_date_start"] = date_start
-            if date_end:
-                payload["filing_date_end"] = date_end
+                # Date range filters
+                date_start = self.config["filters"]["date_range"].get("start")
+                date_end = self.config["filters"]["date_range"].get("end")
+                if date_start:
+                    where_clauses.append("published_at >= %s")
+                    params.append(date_start)
+                if date_end:
+                    where_clauses.append("published_at <= %s")
+                    params.append(date_end)
 
-            self.logger.info(f"Fetching documents page {page}...")
-            response = await self._make_request(session, "kdocuments/search", payload)
+                # Document ID range filters
+                if self.min_doc_id:
+                    where_clauses.append("id >= %s")
+                    params.append(self.min_doc_id)
+                if self.max_doc_id:
+                    where_clauses.append("id <= %s")
+                    params.append(self.max_doc_id)
 
-            if not response:
-                self.logger.error(f"Failed to fetch documents page {page}")
-                break
+                where_sql = " AND ".join(where_clauses)
 
-            # Handle response structure: {"message": "...", "data": [...]}
-            if isinstance(response, dict) and "data" in response:
-                documents = response["data"] if isinstance(response["data"], list) else []
-                total = len(documents)  # API returns full page, not total count
-            else:
-                self.logger.error(f"Unexpected response structure for documents")
-                break
+                query = f"""
+                    SELECT
+                        id,
+                        company_id,
+                        document_type,
+                        published_at as filing_date,
+                        source_identifier as title,
+                        created_at,
+                        updated_at
+                    FROM librarian.kdocuments
+                    WHERE {where_sql}
+                    ORDER BY id
+                """
 
-            if not documents:
-                break
+                self.logger.info(f"Executing query with filters: min_doc_id={self.min_doc_id}, max_doc_id={self.max_doc_id}")
+                cur.execute(query, params)
 
-            # Apply limit if specified (only when not randomizing)
-            if self.limit and not self.randomize:
-                remaining = self.limit - len(all_documents)
-                if len(documents) > remaining:
-                    documents = documents[:remaining]
+                documents = cur.fetchall()
 
-            all_documents.extend(documents)
+                # Convert to list of dicts
+                doc_list = [dict(d) for d in documents]
 
-            # Track document types
-            for doc in documents:
-                doc_type = doc.get("document_type", "").lower()
-                if "filing" in doc_type:
-                    self.stats["filings_found"] += 1
-                elif "slide" in doc_type:
-                    self.stats["slides_found"] += 1
+                # Track document types
+                for doc in doc_list:
+                    doc_type = doc.get("document_type", "").lower()
+                    if "filing" in doc_type:
+                        self.stats["filings_found"] += 1
+                    elif "slide" in doc_type:
+                        self.stats["slides_found"] += 1
 
-            self.logger.info(
-                f"Found {len(documents)} documents on page {page} "
-                f"(total: {len(all_documents)}, filings: {self.stats['filings_found']}, "
-                f"slides: {self.stats['slides_found']})"
-            )
+                self.stats["documents_found"] = len(doc_list)
+                self.logger.info(
+                    f"Total documents found: {len(doc_list)} "
+                    f"({self.stats['filings_found']} filings, {self.stats['slides_found']} slides)"
+                )
 
-            # Check if we've reached limit or end of results
-            if self.limit and not self.randomize and len(all_documents) >= self.limit:
-                break
-            if len(documents) < page_size:
-                break
-
-            page += 1
-
-            # Rate limiting
-            await asyncio.sleep(self.config["download"]["rate_limit_delay"])
-
-        self.stats["documents_found"] = len(all_documents)
-        self.logger.info(
-            f"Total documents found: {len(all_documents)} "
-            f"({self.stats['filings_found']} filings, {self.stats['slides_found']} slides)"
-        )
-        return all_documents
+                return doc_list
+        finally:
+            conn.close()
 
     def _add_documents_to_metadata(
         self, documents: List[Dict], company_lookup: Dict[int, Dict]
@@ -327,6 +355,12 @@ class DocumentFetcher:
             document_id = doc.get("id")
             company_id = doc.get("company_id")
             company = company_lookup.get(company_id, {})
+
+            # Skip if already successfully converted (in processing log)
+            if str(document_id) in self.completed_doc_ids:
+                self.stats["documents_skipped"] += 1
+                self.stats["documents_skipped_completed"] += 1
+                continue
 
             # Check if we should skip
             skip_existing = self.config["download"]["skip_existing"]
@@ -504,59 +538,55 @@ class DocumentFetcher:
 
     async def fetch_all(self, download_pdfs: bool = True):
         """
-        Main entry point: fetch all non-US documents.
+        Main entry point: fetch all non-US documents from database.
 
         Args:
             download_pdfs: Whether to download PDFs (True) or just populate metadata (False).
         """
-        self.logger.info("Starting document fetch process...")
+        self.logger.info("Starting document fetch process (querying database directly)...")
 
-        async with aiohttp.ClientSession() as session:
-            # Step 1: Fetch companies
-            companies = await self.fetch_companies(session)
+        # Step 1: Fetch companies from database
+        companies = self.fetch_companies_from_db()
 
-            if not companies:
-                self.logger.error("No companies found, aborting")
-                return
+        if not companies:
+            self.logger.error("No companies found, aborting")
+            return
 
-            # Create company lookup
-            company_lookup = {c["id"]: c for c in companies}
+        # Create company lookup
+        company_lookup = {c["id"]: c for c in companies}
 
-            # Step 2: Fetch documents
-            company_ids = [c["id"] for c in companies]
-            documents = await self.fetch_documents(session, company_ids)
+        # Step 2: Fetch documents from database
+        company_ids = [c["id"] for c in companies]
+        documents = self.fetch_documents_from_db(company_ids)
 
-            if not documents:
-                self.logger.warning("No documents found")
-                return
+        if not documents:
+            self.logger.warning("No documents found")
+            return
 
-            # Filter by max_doc_id if specified
-            if self.max_doc_id:
-                original_count = len(documents)
-                documents = [d for d in documents if d.get("id", 0) <= self.max_doc_id]
-                filtered_count = original_count - len(documents)
-                if filtered_count > 0:
-                    self.logger.info(f"Filtered out {filtered_count} documents with ID > {self.max_doc_id}")
+        # Randomize document order if requested (for diverse sampling)
+        if self.randomize:
+            self.logger.info(f"Randomizing {len(documents)} documents with seed {self.random_seed}")
+            random.shuffle(documents)
 
-            # Randomize document order if requested (for diverse sampling)
-            if self.randomize:
-                self.logger.info(f"Randomizing {len(documents)} documents with seed {self.random_seed}")
-                random.shuffle(documents)
+            # If limit is set, take first N documents (now randomized)
+            if self.limit and len(documents) > self.limit:
+                documents = documents[:self.limit]
+                self.logger.info(f"Selected {self.limit} random documents from total pool")
+        elif self.limit and len(documents) > self.limit:
+            # Apply limit without randomization
+            documents = documents[:self.limit]
+            self.logger.info(f"Limited to first {self.limit} documents")
 
-                # If limit is set, take first N documents (now randomized)
-                if self.limit and len(documents) > self.limit:
-                    documents = documents[:self.limit]
-                    self.logger.info(f"Selected {self.limit} random documents from total pool")
+        # Step 3: Add to metadata database
+        self._add_documents_to_metadata(documents, company_lookup)
 
-            # Step 3: Add to metadata database
-            self._add_documents_to_metadata(documents, company_lookup)
+        # Step 4: Download PDFs (optional)
+        if download_pdfs:
+            pending = self.metadata.get_pending_downloads()
+            self.logger.info(f"Downloading {len(pending)} pending PDFs...")
 
-            # Step 4: Download PDFs (optional)
-            if download_pdfs:
-                pending = self.metadata.get_pending_downloads()
-                self.logger.info(f"Downloading {len(pending)} pending PDFs...")
-
-                if pending:
+            if pending:
+                async with aiohttp.ClientSession() as session:
                     await self._download_documents_batch(session, pending)
 
         # Print final statistics
@@ -566,8 +596,12 @@ class DocumentFetcher:
         self.logger.info(f"  Documents found: {self.stats['documents_found']}")
         self.logger.info(f"    - Filings: {self.stats['filings_found']}")
         self.logger.info(f"    - Slides: {self.stats['slides_found']}")
+        if self.min_doc_id or self.max_doc_id:
+            self.logger.info(f"  ID range filter: {self.min_doc_id or 'MIN'} to {self.max_doc_id or 'MAX'}")
         self.logger.info(f"  Documents added to DB: {self.stats['documents_added']}")
         self.logger.info(f"  Documents skipped: {self.stats['documents_skipped']}")
+        if self.stats['documents_skipped_completed'] > 0:
+            self.logger.info(f"    - Already completed (in processing log): {self.stats['documents_skipped_completed']}")
         if download_pdfs:
             self.logger.info(f"  PDFs downloaded: {self.stats['documents_downloaded']}")
             self.logger.info(f"  Downloads failed: {self.stats['documents_failed']}")
@@ -629,6 +663,11 @@ async def main():
         help="Random seed for reproducible sampling (default: 42)",
     )
     parser.add_argument(
+        "--min-doc-id",
+        type=int,
+        help="Minimum document ID to fetch (filter out documents with ID < this value)",
+    )
+    parser.add_argument(
         "--max-doc-id",
         type=int,
         help="Maximum document ID to fetch (filter out documents with ID > this value)",
@@ -641,6 +680,7 @@ async def main():
         limit=args.limit,
         randomize=args.randomize,
         random_seed=args.random_seed,
+        min_doc_id=args.min_doc_id,
         max_doc_id=args.max_doc_id
     )
 

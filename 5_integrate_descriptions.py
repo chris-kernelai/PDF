@@ -72,6 +72,7 @@ class ImageDescriptionIntegrator:
             "skipped_files": 0,
             "failed_files": 0,
             "total_descriptions_added": 0,
+            "image_folders_deleted": 0,
         }
 
     def load_uuid_tracking(self) -> Dict[str, Dict]:
@@ -407,6 +408,25 @@ class ImageDescriptionIntegrator:
 
             logger.info(f"✅ Saved enhanced file: {output_file.name}")
             self.stats["processed_files"] += 1
+
+            # Delete the image folder if it exists
+            # Extract document ID from filename
+            stem = markdown_file.stem
+            if stem.startswith("doc_"):
+                doc_id = stem.replace("doc_", "").split("_")[0]
+            else:
+                doc_id = stem.split("_")[0]
+
+            image_folder = Path("images") / doc_id
+            if image_folder.exists() and image_folder.is_dir():
+                try:
+                    import shutil
+                    shutil.rmtree(image_folder)
+                    self.stats["image_folders_deleted"] += 1
+                    logger.info(f"🗑️  Deleted image folder: {image_folder}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete image folder {image_folder}: {e}")
+
             return output_file
 
         except Exception as e:
@@ -416,12 +436,13 @@ class ImageDescriptionIntegrator:
             self.stats["failed_files"] += 1
             return None
 
-    def process_all(self, descriptions_by_doc: Dict[str, List[Dict]]) -> bool:
+    def process_all(self, descriptions_by_doc: Dict[str, List[Dict]], only_new: bool = False) -> bool:
         """
         Process all markdown files.
 
         Args:
             descriptions_by_doc: Dictionary of descriptions by document ID
+            only_new: If True, only process files that have descriptions but no enhanced version yet
 
         Returns:
             True if successful
@@ -448,6 +469,17 @@ class ImageDescriptionIntegrator:
             # Get descriptions for this document
             descriptions = descriptions_by_doc.get(doc_id, [])
 
+            # If only_new mode, skip if no descriptions or output already exists
+            if only_new:
+                output_file = self.output_dir / markdown_file.name
+                if not descriptions:
+                    logger.debug(f"Skipping {markdown_file.name} - no descriptions available")
+                    continue
+                if output_file.exists():
+                    logger.debug(f"Skipping {markdown_file.name} - output already exists")
+                    continue
+                logger.info(f"Processing new file with descriptions: {markdown_file.name}")
+
             # Process the file
             self.process_document(markdown_file, descriptions)
 
@@ -463,6 +495,7 @@ class ImageDescriptionIntegrator:
         print(f"⏭️  Skipped files: {self.stats['skipped_files']}")
         print(f"❌ Failed files: {self.stats['failed_files']}")
         print(f"📷 Total descriptions added: {self.stats['total_descriptions_added']}")
+        print(f"🗑️  Image folders deleted: {self.stats['image_folders_deleted']}")
         print(f"📁 Output directory: {self.output_dir}")
         print("=" * 80)
 
@@ -510,6 +543,11 @@ def main():
         action="store_true",
         help="Overwrite existing enhanced files",
     )
+    parser.add_argument(
+        "--only-new",
+        action="store_true",
+        help="Only process files that have descriptions but no enhanced version yet (for periodic backfill)",
+    )
 
     args = parser.parse_args()
 
@@ -530,6 +568,7 @@ def main():
     print(f"📁 Descriptions directory: {descriptions_dir}")
     print(f"🎨 Format: {args.format}")
     print(f"♻️  Overwrite: {args.overwrite}")
+    print(f"🔄 Only new: {args.only_new}")
     print("=" * 80)
 
     # Check directories exist
@@ -563,7 +602,7 @@ def main():
     integration_start = datetime.now()
 
     # Process all files
-    success = integrator.process_all(descriptions_by_doc)
+    success = integrator.process_all(descriptions_by_doc, only_new=args.only_new)
 
     integration_duration = (datetime.now() - integration_start).total_seconds()
 

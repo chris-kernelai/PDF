@@ -24,6 +24,57 @@ load_dotenv()
 TRACKING_FILE = ".generated/image_description_batches/batch_jobs_tracking.json"
 
 
+def validate_environment(mode: str) -> None:
+    """
+    Validate that required environment variables are set before proceeding.
+
+    Args:
+        mode: 'developer' or 'vertex'
+
+    Raises:
+        SystemExit: If validation fails
+    """
+    errors = []
+
+    if mode == "developer":
+        if not os.environ.get("GEMINI_API_KEY"):
+            errors.append("❌ GEMINI_API_KEY not set (required for Developer mode)")
+    elif mode == "vertex":
+        # Check Google Cloud credentials
+        if not os.environ.get("GCP_PROJECT"):
+            errors.append("❌ GCP_PROJECT not set (required for Vertex AI mode)")
+        if not os.environ.get("GCP_LOCATION"):
+            errors.append("❌ GCP_LOCATION not set (required for Vertex AI mode)")
+
+        # Check if gcloud is authenticated
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if not result.stdout.strip():
+                errors.append("❌ No active Google Cloud account found. Run 'gcloud auth login' first")
+        except FileNotFoundError:
+            errors.append("❌ gcloud CLI not found. Install Google Cloud SDK first")
+        except Exception as e:
+            errors.append(f"⚠️  Could not verify gcloud authentication: {e}")
+
+    if errors:
+        print("\n" + "="*60)
+        print("❌ ENVIRONMENT VALIDATION FAILED")
+        print("="*60)
+        for error in errors:
+            print(error)
+        print("\nPlease set the required environment variables and ensure you're authenticated.")
+        print("="*60 + "\n")
+        sys.exit(1)
+
+    print("✅ Environment validation passed\n")
+
+
 def init_client(mode):
     """Initialize Gemini client in Developer or Vertex mode"""
     if mode == "developer":
@@ -66,6 +117,9 @@ def main():
     if not jobs:
         print("❌ No jobs recorded in tracking file")
         return 1
+
+    # Validate environment before proceeding
+    validate_environment(args.mode)
 
     try:
         client = init_client(args.mode)

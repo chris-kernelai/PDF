@@ -197,6 +197,8 @@ class DoclingConverter:
             FileNotFoundError: If the PDF file doesn't exist.
             ValueError: If the file is not a valid PDF or conversion fails.
         """
+        import subprocess
+
         pdf_path = Path(pdf_source)
 
         if not pdf_path.exists():
@@ -204,6 +206,25 @@ class DoclingConverter:
 
         if not pdf_path.suffix.lower() == ".pdf":
             raise ValueError(f"File is not a PDF: {pdf_path}")
+
+        # Validate actual file type using the `file` command
+        try:
+            result = subprocess.run(
+                ['file', '--mime-type', '-b', str(pdf_path)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            mime_type = result.stdout.strip()
+
+            if not mime_type.startswith('application/pdf'):
+                raise ValueError(f"File is not a valid PDF (detected as {mime_type}): {pdf_path}")
+        except subprocess.TimeoutExpired:
+            raise ValueError(f"Timeout while validating file type: {pdf_path}")
+        except subprocess.CalledProcessError as e:
+            # If file command fails, log but continue (might be OS-specific issue)
+            pass
 
         try:
             converter = self._get_converter()
