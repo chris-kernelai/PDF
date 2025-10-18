@@ -262,9 +262,38 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "  3b: Uploading batches to Gemini..."
     python3 3b_upload_batches.py
 
-    # 3c: Monitor batch progress
+    # 3c: Monitor batch progress (with retry)
     log "  3c: Monitoring batch progress..."
-    python3 3c_monitor_batches.py
+    MAX_RETRIES=60  # 60 retries = 60 minutes max wait
+    RETRY_COUNT=0
+    WAIT_TIME=60  # 60 seconds between checks
+
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        MONITOR_OUTPUT=$(python3 3c_monitor_batches.py 2>&1)
+        echo "$MONITOR_OUTPUT"
+
+        # Check if all jobs completed successfully
+        if echo "$MONITOR_OUTPUT" | grep -q "✅ All batch jobs completed successfully"; then
+            log "  ✓ All batch jobs completed!"
+            break
+        fi
+
+        # Check if any jobs failed
+        if echo "$MONITOR_OUTPUT" | grep -q "❌ Some batch jobs failed"; then
+            error "Some batch jobs failed"
+            exit 1
+        fi
+
+        # Jobs still processing
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            info "  Jobs still processing... waiting ${WAIT_TIME}s before retry $RETRY_COUNT/$MAX_RETRIES"
+            sleep $WAIT_TIME
+        else
+            error "Timeout waiting for batch jobs to complete after $((MAX_RETRIES * WAIT_TIME / 60)) minutes"
+            exit 1
+        fi
+    done
 
     # 3d: Download results
     log "  3d: Downloading batch results..."
@@ -284,9 +313,38 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "  4b: Uploading filter batches..."
     python3 4b_upload_filter_batches.py
 
-    # 4c: Monitor filter progress
+    # 4c: Monitor filter progress (with retry)
     log "  4c: Monitoring filter progress..."
-    python3 4c_monitor_filter_batches.py
+    MAX_RETRIES=60  # 60 retries = 60 minutes max wait
+    RETRY_COUNT=0
+    WAIT_TIME=60  # 60 seconds between checks
+
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        MONITOR_OUTPUT=$(python3 4c_monitor_filter_batches.py 2>&1)
+        echo "$MONITOR_OUTPUT"
+
+        # Check if all jobs completed successfully
+        if echo "$MONITOR_OUTPUT" | grep -q "✅ All batch jobs completed successfully"; then
+            log "  ✓ All filter jobs completed!"
+            break
+        fi
+
+        # Check if any jobs failed
+        if echo "$MONITOR_OUTPUT" | grep -q "❌ Some batch jobs failed"; then
+            error "Some filter jobs failed"
+            exit 1
+        fi
+
+        # Jobs still processing
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            info "  Filter jobs still processing... waiting ${WAIT_TIME}s before retry $RETRY_COUNT/$MAX_RETRIES"
+            sleep $WAIT_TIME
+        else
+            error "Timeout waiting for filter jobs to complete after $((MAX_RETRIES * WAIT_TIME / 60)) minutes"
+            exit 1
+        fi
+    done
 
     # 4d: Download filter results
     log "  4d: Downloading filter results..."
