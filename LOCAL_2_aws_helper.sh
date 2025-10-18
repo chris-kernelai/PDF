@@ -5,38 +5,64 @@
 # AWS instance operations - Run this FROM your LOCAL machine
 #
 # Usage:
-#   ./LOCAL_2_aws_helper.sh setup [ip]                # Complete first-time setup
-#   ./LOCAL_2_aws_helper.sh deploy-config [ip]        # Deploy .env and GCP key
-#   ./LOCAL_2_aws_helper.sh sync-code [ip]            # Sync code changes to instance
-#   ./LOCAL_2_aws_helper.sh connect [ip]              # SSH into instance
-#   ./LOCAL_2_aws_helper.sh upload <file> [ip]        # Upload file to to_process/
-#   ./LOCAL_2_aws_helper.sh upload-dir <dir> [ip]     # Upload directory of PDFs
-#   ./LOCAL_2_aws_helper.sh run [ip]                  # Run pipeline on instance
-#   ./LOCAL_2_aws_helper.sh download [ip]             # Download processed results
-#   ./LOCAL_2_aws_helper.sh logs [ip]                 # View processing logs
-#   ./LOCAL_2_aws_helper.sh status [ip]               # Check instance status
-#   ./LOCAL_2_aws_helper.sh clean [ip]                # Remove processed files
+#   ./LOCAL_2_aws_helper.sh setup [instance]           # Complete first-time setup
+#   ./LOCAL_2_aws_helper.sh deploy-config [instance]   # Deploy .env and GCP key
+#   ./LOCAL_2_aws_helper.sh sync-code [instance]       # Sync code changes to instance
+#   ./LOCAL_2_aws_helper.sh connect [instance]         # SSH into instance
+#   ./LOCAL_2_aws_helper.sh upload <file> [instance]   # Upload file to to_process/
+#   ./LOCAL_2_aws_helper.sh upload-dir <dir> [instance] # Upload directory of PDFs
+#   ./LOCAL_2_aws_helper.sh run [instance]             # Run pipeline on instance
+#   ./LOCAL_2_aws_helper.sh download [instance]        # Download processed results
+#   ./LOCAL_2_aws_helper.sh logs [instance]            # View processing logs
+#   ./LOCAL_2_aws_helper.sh status [instance]          # Check instance status
+#   ./LOCAL_2_aws_helper.sh clean [instance]           # Remove processed files
 #
-# Instance IPs:
-#   GPU instance (default): 54.183.17.152
-#   CPU instance: 3.101.138.219
+# Available instances:
+#   PDF (default): 54.183.17.152 - GPU (Tesla T4) - US West
+#   PDF-London:    35.178.204.146 - GPU (Tesla T4) - London
 #
 ################################################################################
 
-# Parse optional IP address from command line
-# Check last argument - if it looks like an IP, use it
+# Function to get instance configuration
+get_instance_config() {
+    local instance=$1
+    case "$instance" in
+        PDF)
+            INSTANCE_IP="54.183.17.152"
+            PEM_KEY="PDF_key.pem"
+            INSTANCE_TYPE="GPU (Tesla T4)"
+            ;;
+        PDF-London)
+            INSTANCE_IP="35.178.204.146"
+            PEM_KEY="PDF-London.pem"
+            INSTANCE_TYPE="GPU (Tesla T4 London)"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# Parse optional instance name or IP from command line
 LAST_ARG="${@: -1}"
 if [[ "$LAST_ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    # It's an IP address
     INSTANCE_IP="$LAST_ARG"
+    PEM_KEY="PDF_key.pem"  # Default key for IP-based access
+    INSTANCE_TYPE="Custom"
     # Remove IP from arguments
     set -- "${@:1:$(($#-1))}"
+elif get_instance_config "$LAST_ARG"; then
+    # It's a named instance - config already set by function
+    # Remove instance name from arguments
+    set -- "${@:1:$(($#-1))}"
 else
-    # Default to GPU instance
-    INSTANCE_IP="54.183.17.152"
+    # Default to PDF instance
+    get_instance_config "PDF"
 fi
 
 INSTANCE_USER="ubuntu"
-PEM_KEY="PDF_key.pem"
 REMOTE_DIR="~/pdf_pipeline"
 
 # Colors
@@ -45,15 +71,6 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
-
-# Determine instance type for display
-if [ "$INSTANCE_IP" = "54.183.17.152" ]; then
-    INSTANCE_TYPE="GPU (Tesla T4)"
-elif [ "$INSTANCE_IP" = "3.101.138.219" ]; then
-    INSTANCE_TYPE="CPU (8 cores)"
-else
-    INSTANCE_TYPE="Custom"
-fi
 
 # Show which instance we're using
 echo -e "${BLUE}Target: ${INSTANCE_TYPE} instance @ ${INSTANCE_IP}${NC}"
@@ -69,7 +86,20 @@ chmod 400 "$PEM_KEY"
 case "$1" in
     connect)
         echo -e "${BLUE}Connecting to AWS instance...${NC}"
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source venv/bin/activate && bash"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "
+            if [ -d $REMOTE_DIR ]; then
+                cd $REMOTE_DIR
+                if [ -f venv/bin/activate ]; then
+                    source venv/bin/activate
+                    echo '✓ Activated virtual environment'
+                else
+                    echo '⚠️  Virtual environment not found - run setup first'
+                fi
+            else
+                echo '⚠️  Pipeline directory not found at $REMOTE_DIR - run setup first'
+            fi
+            exec bash
+        "
         ;;
 
     upload)
@@ -335,41 +365,41 @@ ENDSSH
     *)
         echo "AWS Instance Helper"
         echo ""
-        echo "Usage: $0 <command> [arguments] [ip_address]"
+        echo "Usage: $0 <command> [arguments] [instance]"
         echo ""
         echo "Setup Commands:"
-        echo "  setup [ip]           Complete setup (config + code + deps)"
-        echo "  deploy-config [ip]   Deploy .env and GCP key to instance"
-        echo "  sync-code [ip]       Sync code changes to instance"
+        echo "  setup [instance]           Complete setup (config + code + deps)"
+        echo "  deploy-config [instance]   Deploy .env and GCP key to instance"
+        echo "  sync-code [instance]       Sync code changes to instance"
         echo ""
         echo "Operation Commands:"
-        echo "  connect [ip]         SSH into instance"
-        echo "  upload <file> [ip]   Upload PDF to to_process/"
-        echo "  upload-dir <dir> [ip] Upload all PDFs from directory"
-        echo "  run [ip]             Run full pipeline on instance"
-        echo "  run-md-only [ip]     Run pipeline (stop after markdown)"
-        echo "  status [ip]          Check instance status"
-        echo "  logs [ip]            View processing logs"
+        echo "  connect [instance]         SSH into instance"
+        echo "  upload <file> [instance]   Upload PDF to to_process/"
+        echo "  upload-dir <dir> [instance] Upload all PDFs from directory"
+        echo "  run [instance]             Run full pipeline on instance"
+        echo "  run-md-only [instance]     Run pipeline (stop after markdown)"
+        echo "  status [instance]          Check instance status"
+        echo "  logs [instance]            View processing logs"
         echo ""
         echo "Download Commands:"
-        echo "  download [ip]        Download results to ./aws_results/"
-        echo "  download-code [ip]   Download code from AWS (excludes aws_helper.sh)"
+        echo "  download [instance]        Download results to ./aws_results/"
+        echo "  download-code [instance]   Download code from AWS (excludes aws_helper.sh)"
         echo ""
         echo "Maintenance Commands:"
-        echo "  clean [ip]           Remove all processed files on instance"
+        echo "  clean [instance]           Remove all processed files on instance"
         echo ""
         echo "Available Instances:"
-        echo "  GPU:  54.183.17.152  (Tesla T4, default)"
-        echo "  CPU:  3.101.138.219  (8 cores)"
+        echo "  PDF (default):  54.183.17.152  - GPU (Tesla T4) - US West"
+        echo "  PDF-London:     35.178.204.146 - GPU (Tesla T4) - London"
         echo ""
         echo "Examples:"
-        echo "  $0 setup                        # Setup GPU instance (default)"
-        echo "  $0 setup 3.101.138.219          # Setup CPU instance"
-        echo "  $0 connect                      # Connect to GPU instance"
-        echo "  $0 connect 3.101.138.219        # Connect to CPU instance"
-        echo "  $0 sync-code 3.101.138.219      # Sync code to CPU instance"
-        echo "  $0 run                          # Run on GPU instance"
-        echo "  $0 run 3.101.138.219            # Run on CPU instance"
+        echo "  $0 setup                   # Setup PDF instance (default)"
+        echo "  $0 setup PDF-London        # Setup PDF-London instance"
+        echo "  $0 connect                 # Connect to PDF instance"
+        echo "  $0 connect PDF-London      # Connect to PDF-London instance"
+        echo "  $0 sync-code PDF-London    # Sync code to PDF-London instance"
+        echo "  $0 run                     # Run on PDF instance"
+        echo "  $0 run PDF-London          # Run on PDF-London instance"
         exit 1
         ;;
 esac

@@ -253,6 +253,8 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
         GPU_FLAG=""
         [ "$CPU_MODE" = true ] && GPU_FLAG="--no-gpu"
 
+        info "Starting conversion with $WORKERS parallel workers..."
+
         python3 2_batch_convert_pdfs.py \
             data/to_process \
             data/processed \
