@@ -241,33 +241,54 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
 
         log "STEP 2: Converting PDFs to Markdown (batch $BATCH_NUM)"
 
-        # Create a temporary marker to track which PDFs are in this batch
-        BATCH_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | head -n "$BATCH_SIZE")
-        BATCH_PDF_COUNT=$(echo "$BATCH_PDFS" | grep -c "doc_" || true)
+        # Process in mini-batches of 10 to ensure GPU memory is cleared
+        MINI_BATCH_SIZE=10
+        MINI_BATCH_NUM=1
+        PDFS_PROCESSED_IN_BATCH=0
 
-        if [ "$BATCH_PDF_COUNT" -eq 0 ]; then
-            warn "No PDFs left to process in this batch"
-            break
-        fi
+        while [ "$PDFS_PROCESSED_IN_BATCH" -lt "$CURRENT_BATCH_SIZE" ]; do
+            # Count how many PDFs are left to process
+            PDFS_LEFT=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
 
-        GPU_FLAG=""
-        [ "$CPU_MODE" = true ] && GPU_FLAG="--no-gpu"
+            if [ "$PDFS_LEFT" -eq 0 ]; then
+                info "No more PDFs to process"
+                break
+            fi
 
-        info "Starting conversion with $WORKERS parallel workers..."
+            # Determine mini-batch size (10 or remaining, whichever is smaller)
+            THIS_MINI_BATCH=$(( PDFS_LEFT < MINI_BATCH_SIZE ? PDFS_LEFT : MINI_BATCH_SIZE ))
+            REMAINING_IN_BATCH=$(( CURRENT_BATCH_SIZE - PDFS_PROCESSED_IN_BATCH ))
+            THIS_MINI_BATCH=$(( THIS_MINI_BATCH < REMAINING_IN_BATCH ? THIS_MINI_BATCH : REMAINING_IN_BATCH ))
 
-        python3 2_batch_convert_pdfs.py \
-            data/to_process \
-            data/processed \
-            --batch-size "$WORKERS" \
-            --extract-images \
-            $GPU_FLAG
+            info "Mini-batch $MINI_BATCH_NUM: Processing $THIS_MINI_BATCH PDFs (restarting Python process for GPU memory cleanup)"
 
-        if [ $? -ne 0 ]; then
-            error "PDF conversion failed for batch $BATCH_NUM"
-            exit 1
-        fi
+            GPU_FLAG=""
+            [ "$CPU_MODE" = true ] && GPU_FLAG="--no-gpu"
 
-        log "✓ PDF conversion complete for batch $BATCH_NUM"
+            # Process this mini-batch - Python process exits after, clearing GPU memory
+            python3 2_batch_convert_pdfs.py \
+                data/to_process \
+                data/processed \
+                --batch-size "$WORKERS" \
+                --max-docs "$THIS_MINI_BATCH" \
+                --extract-images \
+                $GPU_FLAG
+
+            if [ $? -ne 0 ]; then
+                error "PDF conversion failed for mini-batch $MINI_BATCH_NUM of batch $BATCH_NUM"
+                exit 1
+            fi
+
+            PDFS_PROCESSED_IN_BATCH=$((PDFS_PROCESSED_IN_BATCH + THIS_MINI_BATCH))
+            MINI_BATCH_NUM=$((MINI_BATCH_NUM + 1))
+
+            info "✓ Mini-batch complete. Total processed in this batch: $PDFS_PROCESSED_IN_BATCH/$CURRENT_BATCH_SIZE"
+
+            # Brief pause to ensure cleanup
+            sleep 2
+        done
+
+        log "✓ PDF conversion complete for batch $BATCH_NUM (processed in $((MINI_BATCH_NUM - 1)) mini-batches of max 10 PDFs each)"
         echo ""
     else
         log "STEP 2: Skipping PDF conversion (no PDFs to process)"

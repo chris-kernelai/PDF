@@ -45,7 +45,8 @@ filters:
   # Document types to fetch
   document_types:
     - filing
-    - slides
+    - slide
+    - call_transcript
 
   # Optional date range (null = no limit)
   date_range:

@@ -466,6 +466,7 @@ class BatchDoclingConverter:
         doc_type: str = "both",
         extract_images: bool = False,
         chunk_page_limit: int = 50,
+        max_docs: Optional[int] = None,
     ):
         """
         Initialize the batch converter.
@@ -518,6 +519,9 @@ class BatchDoclingConverter:
         # Image extraction
         self.extract_images = extract_images
         self.chunk_page_limit = chunk_page_limit
+
+        # Maximum number of docs to process
+        self.max_docs = max_docs
 
         # Processed documents tracker
         self.processed_tracker_file = Path("processed_documents.txt")
@@ -917,6 +921,105 @@ class BatchDoclingConverter:
 
         return Path(input_path_str), Path(output_path_str), success, error_msg, image_count, page_count, processing_time
 
+    def _process_batch_sequential(
+        self, pdf_files: List[Path]
+    ) -> List[Tuple[Path, Path, bool, str, int, int, float]]:
+        """
+        Process PDF files sequentially (used when batch_size=1 to avoid pooling overhead).
+
+        Args:
+            pdf_files: List of PDF files to process.
+
+        Returns:
+            List of tuples containing (input_path, output_path, success, error_message, image_count, page_count, processing_time).
+        """
+        results = []
+
+        for pdf_file in pdf_files:
+            output_path = self._get_output_path(pdf_file)
+            raw_output_path = output_path.parent.parent / 'data' / 'processed_raw' / output_path.name
+
+            # Skip if already processed or exists
+            if self._is_already_processed(pdf_file):
+                self.logger.info("Skipping %s - already processed", pdf_file.name)
+                results.append((pdf_file, output_path, True, "Skipped - already processed", 0, 0, 0.0))
+                continue
+
+            if output_path.exists():
+                self.logger.info("Skipping %s - output already exists", pdf_file.name)
+                # Delete the PDF since output already exists
+                if self.remove_processed and pdf_file.exists():
+                    try:
+                        pdf_file.unlink()
+                        self.stats["removed_files"] += 1
+                        self.logger.info("Deleted skipped file: %s", pdf_file.name)
+                    except OSError as e:
+                        self.logger.warning("Failed to delete skipped file %s: %s", pdf_file.name, e)
+                results.append((pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0))
+                continue
+
+            # Process directly without worker process overhead
+            try:
+                result = _process_single_pdf_worker(
+                    str(pdf_file),
+                    str(output_path),
+                    str(raw_output_path),
+                    'data/images',
+                    self.use_gpu,
+                    self.table_mode,
+                    self.images_scale,
+                    self.do_cell_matching,
+                    self.ocr_confidence_threshold,
+                    self.add_page_numbers,
+                    self.chunk_page_limit,
+                    self.batch_size,
+                )
+
+                input_path_str, output_path_str, success, error_msg, image_count, page_count, processing_time = result
+
+                if success and not error_msg:
+                    doc_id = pdf_file.stem
+                    self.proc_logger.log_conversion(
+                        doc_id=doc_id,
+                        pages=page_count,
+                        duration_seconds=processing_time,
+                        status="success"
+                    )
+                    self.logger.info(
+                        "Successfully converted %s (%d pages, %d images in %.2f seconds)",
+                        pdf_file.name,
+                        page_count,
+                        image_count,
+                        processing_time
+                    )
+                else:
+                    self.logger.error("Failed to convert %s: %s", pdf_file.name, error_msg)
+
+                results.append((
+                    Path(input_path_str),
+                    Path(output_path_str),
+                    success,
+                    error_msg,
+                    image_count,
+                    page_count,
+                    processing_time
+                ))
+
+            except Exception as e:
+                error_msg = f"Processing failed: {str(e)}"
+                self.logger.error("Error processing %s: %s", pdf_file.name, error_msg)
+                results.append((
+                    pdf_file,
+                    output_path,
+                    False,
+                    error_msg,
+                    0,
+                    0,
+                    0.0
+                ))
+
+        return results
+
     def _process_batch_parallel(
         self, pdf_files: List[Path], max_workers: Optional[int] = None
     ) -> List[Tuple[Path, Path, bool, str, int, int, float]]:
@@ -1111,14 +1214,27 @@ class BatchDoclingConverter:
                 )
                 self.logger.info("Processing %d remaining files", len(pdf_files))
 
+        # Limit to max_docs if specified
+        if self.max_docs is not None and len(pdf_files) > self.max_docs:
+            self.logger.info(
+                "Limiting to %d documents (total available: %d)",
+                self.max_docs,
+                len(pdf_files)
+            )
+            pdf_files = pdf_files[:self.max_docs]
+
         if not pdf_files:
             self.logger.info("All files already have both representations - nothing to do!")
             return self.stats
 
-        # Process all files in parallel using ProcessPoolExecutor
-        self.logger.info("Processing files with %d parallel workers...", self.batch_size)
-
-        results = self._process_batch_parallel(pdf_files, max_workers=self.batch_size)
+        # Fast path for batch_size=1: process sequentially without async/pooling overhead
+        if self.batch_size == 1:
+            self.logger.info("Processing files sequentially (batch_size=1 - no pooling overhead)...")
+            results = self._process_batch_sequential(pdf_files)
+        else:
+            # Process all files in parallel using ProcessPoolExecutor
+            self.logger.info("Processing files with %d parallel workers...", self.batch_size)
+            results = self._process_batch_parallel(pdf_files, max_workers=self.batch_size)
 
         # Update statistics, upload files, and remove successfully processed files
         # Note: We need to run upload in async context if enabled
@@ -1280,6 +1396,7 @@ async def convert_folder(
     doc_type: str = "both",
     extract_images: bool = False,
     chunk_page_limit: int = 50,
+    max_docs: Optional[int] = None,
 ) -> Dict[str, int]:
     """
     Convert all PDF files in a folder to Markdown.
@@ -1304,6 +1421,7 @@ async def convert_folder(
         doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
         extract_images: Whether to extract and save images from PDFs (default: False).
         chunk_page_limit: Maximum pages processed per chunk (default: 50; 0 disables chunking).
+        max_docs: Maximum number of PDFs to process in this run (default: None = process all).
 
     Returns:
         Dictionary containing conversion statistics.
@@ -1328,6 +1446,7 @@ async def convert_folder(
         doc_type=doc_type,
         extract_images=extract_images,
         chunk_page_limit=chunk_page_limit,
+        max_docs=max_docs,
     )
 
     try:
@@ -1445,6 +1564,12 @@ def main():
         default=30,
         help="Split PDFs into chunks with at most this many pages before processing (0 disables chunking)",
     )
+    parser.add_argument(
+        "--max-docs",
+        type=int,
+        default=None,
+        help="Maximum number of PDFs to process in this run (default: process all available PDFs)",
+    )
 
     args = parser.parse_args()
 
@@ -1473,6 +1598,7 @@ def main():
             doc_type=args.doc_type,
             extract_images=args.extract_images,
             chunk_page_limit=args.chunk_page_limit,
+            max_docs=args.max_docs,
         )
     )
 

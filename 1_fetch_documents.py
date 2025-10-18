@@ -112,6 +112,13 @@ class DocumentFetcher:
             "slides_found": 0,
         }
 
+        # Detailed statistics using collections
+        from collections import defaultdict, Counter
+        self.documents_by_type = Counter()  # Count of each document type
+        self.documents_by_country = Counter()  # Count of documents per country
+        self.companies_by_country = Counter()  # Count of companies per country
+        self.documents_by_type_and_country = defaultdict(lambda: defaultdict(int))  # type -> country -> count
+
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file."""
         with open(config_path, "r") as f:
@@ -316,6 +323,123 @@ class DocumentFetcher:
             options="-c default_transaction_read_only=on",  # READ-ONLY mode
         )
 
+    def check_us_documents(self) -> Dict:
+        """
+        Check US documents for comparison (even though we don't process them).
+
+        Returns:
+            Dict with US document statistics.
+        """
+        self.logger.info("Checking US documents (for reference, not processing)...")
+
+        conn = self._get_db_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Count US companies
+                cur.execute("""
+                    SELECT COUNT(*) as count
+                    FROM librarian.company
+                    WHERE country = 'United States'
+                """)
+                us_companies = cur.fetchone()["count"]
+
+                # Count US documents by type
+                query = """
+                    SELECT
+                        d.document_type::text,
+                        COUNT(*) as count
+                    FROM librarian.kdocuments d
+                    JOIN librarian.company c ON d.company_id = c.id
+                    WHERE c.country = 'United States'
+                """
+
+                # Add document ID range filters if set
+                where_clauses = []
+                params = []
+                if self.min_doc_id:
+                    where_clauses.append("d.id >= %s")
+                    params.append(self.min_doc_id)
+                if self.max_doc_id:
+                    where_clauses.append("d.id <= %s")
+                    params.append(self.max_doc_id)
+
+                if where_clauses:
+                    query += " AND " + " AND ".join(where_clauses)
+
+                query += " GROUP BY d.document_type::text ORDER BY count DESC"
+
+                cur.execute(query, params)
+                us_docs_by_type = cur.fetchall()
+
+                total_us_docs = sum(row["count"] for row in us_docs_by_type)
+
+                self.logger.info(f"US Companies: {us_companies:,}")
+                self.logger.info(f"US Documents (in ID range): {total_us_docs:,}")
+                if us_docs_by_type:
+                    self.logger.info("  By type:")
+                    for row in us_docs_by_type:
+                        self.logger.info(f"    {row['document_type']:20} {row['count']:6,} documents")
+
+                return {
+                    "companies": us_companies,
+                    "total_documents": total_us_docs,
+                    "by_type": us_docs_by_type
+                }
+        finally:
+            conn.close()
+
+    def check_available_document_types(self) -> List[str]:
+        """
+        Check all available document types in the database for non-US companies.
+        This helps identify if we're missing any document types in our config.
+
+        Returns:
+            List of all document types found in the database.
+        """
+        self.logger.info("Checking all available document types in database...")
+
+        conn = self._get_db_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Get all document types for non-US companies
+                countries = self.config["filters"]["countries"]
+
+                query = """
+                    SELECT DISTINCT d.document_type::text
+                    FROM librarian.kdocuments d
+                    JOIN librarian.company c ON d.company_id = c.id
+                    WHERE c.country = ANY(%s::text[])
+                    ORDER BY d.document_type::text
+                """
+
+                cur.execute(query, (countries,))
+                results = cur.fetchall()
+
+                all_types = [row["document_type"] for row in results]
+
+                # Compare with configured types
+                configured_types = [dt.upper() for dt in self.config["filters"]["document_types"]]
+                missing_types = [dt for dt in all_types if dt not in configured_types]
+
+                self.logger.info(f"Found {len(all_types)} distinct document types in database:")
+                for doc_type in all_types:
+                    if doc_type in configured_types:
+                        self.logger.info(f"  ✓ {doc_type} (configured)")
+                    else:
+                        self.logger.info(f"  ✗ {doc_type} (NOT configured - will be skipped)")
+
+                if missing_types:
+                    self.logger.warning(
+                        f"⚠️  WARNING: {len(missing_types)} document type(s) are NOT in config and will be skipped: "
+                        f"{', '.join(missing_types)}"
+                    )
+                else:
+                    self.logger.info("✓ All available document types are configured")
+
+                return all_types
+        finally:
+            conn.close()
+
     def fetch_companies_from_db(self) -> List[Dict]:
         """
         Fetch all non-US companies from database.
@@ -343,6 +467,11 @@ class DocumentFetcher:
                 # Convert to list of dicts
                 company_list = [dict(c) for c in companies]
 
+                # Track companies by country
+                for company in company_list:
+                    country = company.get("country", "Unknown")
+                    self.companies_by_country[country] += 1
+
                 self.stats["companies_found"] = len(company_list)
                 self.logger.info(f"Total companies found: {len(company_list)}")
                 return company_list
@@ -357,7 +486,7 @@ class DocumentFetcher:
             company_ids: List of company IDs to fetch documents for.
 
         Returns:
-            List of document dictionaries.
+            List of document dictionaries with country information.
         """
         self.logger.info(f"Fetching documents from database for {len(company_ids)} companies...")
 
@@ -365,46 +494,48 @@ class DocumentFetcher:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 # Build query with filters
-                where_clauses = ["company_id = ANY(%s::int[])"]
+                where_clauses = ["d.company_id = ANY(%s::int[])"]
                 params = [company_ids]
 
                 # Document type filter (cast to text to handle enum type)
                 doc_types = [dt.upper() for dt in self.config["filters"]["document_types"]]
-                where_clauses.append("document_type::text = ANY(%s::text[])")
+                where_clauses.append("d.document_type::text = ANY(%s::text[])")
                 params.append(doc_types)
 
                 # Date range filters
                 date_start = self.config["filters"]["date_range"].get("start")
                 date_end = self.config["filters"]["date_range"].get("end")
                 if date_start:
-                    where_clauses.append("published_at >= %s")
+                    where_clauses.append("d.published_at >= %s")
                     params.append(date_start)
                 if date_end:
-                    where_clauses.append("published_at <= %s")
+                    where_clauses.append("d.published_at <= %s")
                     params.append(date_end)
 
                 # Document ID range filters
                 if self.min_doc_id:
-                    where_clauses.append("id >= %s")
+                    where_clauses.append("d.id >= %s")
                     params.append(self.min_doc_id)
                 if self.max_doc_id:
-                    where_clauses.append("id <= %s")
+                    where_clauses.append("d.id <= %s")
                     params.append(self.max_doc_id)
 
                 where_sql = " AND ".join(where_clauses)
 
                 query = f"""
                     SELECT
-                        id,
-                        company_id,
-                        document_type,
-                        published_at as filing_date,
-                        source_identifier as title,
-                        created_at,
-                        updated_at
-                    FROM librarian.kdocuments
+                        d.id,
+                        d.company_id,
+                        d.document_type,
+                        d.published_at as filing_date,
+                        d.source_identifier as title,
+                        d.created_at,
+                        d.updated_at,
+                        c.country
+                    FROM librarian.kdocuments d
+                    JOIN librarian.company c ON d.company_id = c.id
                     WHERE {where_sql}
-                    ORDER BY id
+                    ORDER BY d.id
                 """
 
                 self.logger.info(f"Executing query with filters: min_doc_id={self.min_doc_id}, max_doc_id={self.max_doc_id}")
@@ -415,12 +546,25 @@ class DocumentFetcher:
                 # Convert to list of dicts
                 doc_list = [dict(d) for d in documents]
 
-                # Track document types
+                # Track document types and countries
                 for doc in doc_list:
-                    doc_type = doc.get("document_type", "").lower()
+                    doc_type_raw = doc.get("document_type", "")
+                    doc_type = doc_type_raw.lower()
+                    country = doc.get("country", "Unknown")
+
+                    # Track by document type (raw value)
+                    self.documents_by_type[doc_type_raw] += 1
+
+                    # Track by country
+                    self.documents_by_country[country] += 1
+
+                    # Track by type AND country
+                    self.documents_by_type_and_country[doc_type_raw][country] += 1
+
+                    # Legacy stats (for backward compatibility)
                     if "filing" in doc_type:
                         self.stats["filings_found"] += 1
-                    elif "slide" in doc_type:
+                    if "slide" in doc_type:  # Changed to 'if' not 'elif' to catch both
                         self.stats["slides_found"] += 1
 
                 self.stats["documents_found"] = len(doc_list)
@@ -655,6 +799,17 @@ class DocumentFetcher:
             async def download_one(doc: Dict):
                 async with semaphore:
                     document_id = doc["document_id"]
+
+                    # Check if PDF already exists
+                    pdf_filename = f"doc_{document_id}.pdf"
+                    pdf_path = self.input_folder / pdf_filename
+
+                    if pdf_path.exists():
+                        self.logger.info(f"Document {document_id} already exists, skipping download")
+                        self.metadata.mark_downloaded(document_id, pdf_filename)
+                        self.stats["documents_skipped"] += 1
+                        return
+
                     pdf_url = url_map.get(document_id)
 
                     if not pdf_url:
@@ -688,6 +843,109 @@ class DocumentFetcher:
             # Download all documents in this batch concurrently
             await asyncio.gather(*[download_one(doc) for doc in batch])
 
+    def _print_detailed_statistics(self):
+        """Print detailed breakdown of documents by type and country."""
+        self.logger.info("=" * 80)
+        self.logger.info("DETAILED STATISTICS")
+        self.logger.info("=" * 80)
+
+        # Companies by country
+        if self.companies_by_country:
+            self.logger.info("\nCOMPANIES BY COUNTRY:")
+            self.logger.info("-" * 40)
+            for country, count in sorted(self.companies_by_country.items(), key=lambda x: (-x[1], x[0])):
+                self.logger.info(f"  {country:30} {count:5,} companies")
+            self.logger.info(f"  {'TOTAL':30} {sum(self.companies_by_country.values()):5,} companies")
+
+        # Documents by type
+        if self.documents_by_type:
+            self.logger.info("\nDOCUMENTS BY TYPE:")
+            self.logger.info("-" * 40)
+            for doc_type, count in sorted(self.documents_by_type.items(), key=lambda x: (-x[1], x[0])):
+                self.logger.info(f"  {doc_type:30} {count:6,} documents")
+            self.logger.info(f"  {'TOTAL':30} {sum(self.documents_by_type.values()):6,} documents")
+
+        # Documents by country
+        if self.documents_by_country:
+            self.logger.info("\nDOCUMENTS BY COUNTRY:")
+            self.logger.info("-" * 40)
+            for country, count in sorted(self.documents_by_country.items(), key=lambda x: (-x[1], x[0])):
+                self.logger.info(f"  {country:30} {count:6,} documents")
+            self.logger.info(f"  {'TOTAL':30} {sum(self.documents_by_country.values()):6,} documents")
+
+        # Documents by type AND country (matrix view)
+        if self.documents_by_type_and_country:
+            self.logger.info("\nDOCUMENTS BY TYPE × COUNTRY:")
+            self.logger.info("-" * 80)
+
+            # Get all unique document types and countries
+            all_types = sorted(self.documents_by_type_and_country.keys())
+            all_countries = sorted(set(
+                country
+                for type_dict in self.documents_by_type_and_country.values()
+                for country in type_dict.keys()
+            ))
+
+            # Print header
+            header = f"  {'Type':20}"
+            for country in all_countries:
+                header += f" {country[:8]:>8}"
+            header += f" {'TOTAL':>8}"
+            self.logger.info(header)
+            self.logger.info("  " + "-" * (20 + 9 * (len(all_countries) + 1)))
+
+            # Print rows
+            for doc_type in all_types:
+                row = f"  {doc_type:20}"
+                row_total = 0
+                for country in all_countries:
+                    count = self.documents_by_type_and_country[doc_type].get(country, 0)
+                    row_total += count
+                    if count > 0:
+                        row += f" {count:8,}"
+                    else:
+                        row += f" {'-':>8}"
+                row += f" {row_total:8,}"
+                self.logger.info(row)
+
+            # Print totals row
+            totals_row = f"  {'TOTAL':20}"
+            grand_total = 0
+            for country in all_countries:
+                country_total = sum(
+                    self.documents_by_type_and_country[doc_type].get(country, 0)
+                    for doc_type in all_types
+                )
+                grand_total += country_total
+                totals_row += f" {country_total:8,}"
+            totals_row += f" {grand_total:8,}"
+            self.logger.info("  " + "-" * (20 + 9 * (len(all_countries) + 1)))
+            self.logger.info(totals_row)
+
+        # US vs Non-US comparison
+        if hasattr(self, 'us_stats') and self.us_stats:
+            self.logger.info("\n" + "=" * 80)
+            self.logger.info("US vs NON-US COMPARISON (in current ID range):")
+            self.logger.info("=" * 80)
+
+            non_us_total = sum(self.documents_by_country.values())
+            us_total = self.us_stats.get("total_documents", 0)
+            grand_total = non_us_total + us_total
+
+            if grand_total > 0:
+                non_us_pct = (non_us_total / grand_total) * 100
+                us_pct = (us_total / grand_total) * 100
+
+                self.logger.info(f"  {'Non-US Documents':30} {non_us_total:8,} ({non_us_pct:5.1f}%)")
+                self.logger.info(f"  {'US Documents':30} {us_total:8,} ({us_pct:5.1f}%)")
+                self.logger.info(f"  {'-' * 50}")
+                self.logger.info(f"  {'TOTAL in ID range':30} {grand_total:8,} (100.0%)")
+
+                self.logger.info(f"\n  {'Non-US Companies':30} {len(self.companies_by_country):8,}")
+                self.logger.info(f"  {'US Companies':30} {self.us_stats.get('companies', 0):8,}")
+
+        self.logger.info("=" * 80)
+
     async def fetch_all(self, download_pdfs: bool = True):
         """
         Main entry point: fetch all non-US documents from database.
@@ -696,6 +954,13 @@ class DocumentFetcher:
             download_pdfs: Whether to download PDFs (True) or just populate metadata (False).
         """
         self.logger.info("Starting document fetch process (querying database directly)...")
+
+        # Step 0a: Check US documents (for reference)
+        self.us_stats = self.check_us_documents()
+        self.logger.info("")  # Blank line for readability
+
+        # Step 0b: Check what document types are available (non-US)
+        available_types = self.check_available_document_types()
 
         # Step 1: Fetch companies from database
         companies = self.fetch_companies_from_db()
@@ -737,6 +1002,9 @@ class DocumentFetcher:
 
         # Step 3: Add to metadata database
         self._add_documents_to_metadata(documents, company_lookup)
+
+        # Print detailed statistics breakdown (before downloads start)
+        self._print_detailed_statistics()
 
         # Step 4: Download PDFs (optional)
         if download_pdfs:
