@@ -389,7 +389,7 @@ class BatchDoclingConverter:
         upload_document_type: str = "FILING",
         doc_type: str = "both",
         extract_images: bool = False,
-        chunk_page_limit: int = 75,
+        chunk_page_limit: int = 50,
     ):
         """
         Initialize the batch converter.
@@ -414,7 +414,7 @@ class BatchDoclingConverter:
             upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
             doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
         extract_images: Whether to extract and save images from PDFs (default: False).
-        chunk_page_limit: Maximum pages per chunk before splitting large PDFs (default: 75; 0 disables chunking).
+        chunk_page_limit: Maximum pages per chunk before splitting large PDFs (default: 50; 0 disables chunking).
         """
         self.input_folder = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -1201,7 +1201,7 @@ async def convert_folder(
     upload_document_type: str = "FILING",
     doc_type: str = "both",
     extract_images: bool = False,
-    chunk_page_limit: int = 75,
+    chunk_page_limit: int = 50,
 ) -> Dict[str, int]:
     """
     Convert all PDF files in a folder to Markdown.
@@ -1225,7 +1225,7 @@ async def convert_folder(
         upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
         doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
         extract_images: Whether to extract and save images from PDFs (default: False).
-        chunk_page_limit: Maximum pages processed per chunk (default: 75; 0 disables chunking).
+        chunk_page_limit: Maximum pages processed per chunk (default: 50; 0 disables chunking).
 
     Returns:
         Dictionary containing conversion statistics.
@@ -1364,7 +1364,7 @@ def main():
     parser.add_argument(
         "--chunk-page-limit",
         type=int,
-        default=75,
+        default=50,
         help="Split PDFs into chunks with at most this many pages before processing (0 disables chunking)",
     )
 
