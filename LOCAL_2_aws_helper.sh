@@ -1,18 +1,21 @@
 #!/bin/bash
 ################################################################################
-# aws_helper.sh
+# LOCAL_2_aws_helper.sh
 #
-# Helper script for common AWS GPU instance operations
+# AWS GPU instance operations - Run this FROM your LOCAL machine
 #
 # Usage:
-#   ./aws_helper.sh connect              # SSH into instance
-#   ./aws_helper.sh upload <file>        # Upload file to to_process/
-#   ./aws_helper.sh upload-dir <dir>     # Upload directory of PDFs
-#   ./aws_helper.sh download             # Download processed results
-#   ./aws_helper.sh download-code        # Download code from AWS (with backup)
-#   ./aws_helper.sh run                  # Run pipeline on instance
-#   ./aws_helper.sh logs                 # View processing logs
-#   ./aws_helper.sh sync-code            # Sync code changes to instance
+#   ./LOCAL_2_aws_helper.sh setup                # Complete first-time setup
+#   ./LOCAL_2_aws_helper.sh deploy-config        # Deploy .env and GCP key
+#   ./LOCAL_2_aws_helper.sh sync-code            # Sync code changes to instance
+#   ./LOCAL_2_aws_helper.sh connect              # SSH into instance
+#   ./LOCAL_2_aws_helper.sh upload <file>        # Upload file to to_process/
+#   ./LOCAL_2_aws_helper.sh upload-dir <dir>     # Upload directory of PDFs
+#   ./LOCAL_2_aws_helper.sh run                  # Run pipeline on instance
+#   ./LOCAL_2_aws_helper.sh download             # Download processed results
+#   ./LOCAL_2_aws_helper.sh logs                 # View processing logs
+#   ./LOCAL_2_aws_helper.sh status               # Check instance status
+#   ./LOCAL_2_aws_helper.sh clean                # Remove processed files
 #
 ################################################################################
 
@@ -120,10 +123,106 @@ case "$1" in
         # Sync shell scripts
         scp -i "$PEM_KEY" *.sh "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
 
+        # Sync src directory if it exists
+        if [ -d "src" ]; then
+            scp -i "$PEM_KEY" -r src "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        fi
+
         # Make scripts executable
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod +x *.sh"
 
         echo -e "${GREEN}✅ Code synced${NC}"
+        ;;
+
+    deploy-config)
+        echo -e "${BLUE}Deploying configuration to instance...${NC}"
+
+        # Check if .env exists
+        if [ ! -f ".env" ]; then
+            echo -e "${RED}❌ .env file not found${NC}"
+            exit 1
+        fi
+
+        # Copy .env
+        echo "Copying .env..."
+        scp -i "$PEM_KEY" .env "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+
+        # Copy GCP service account key if it exists
+        GCP_KEY="$HOME/gcp-service-account-key.json"
+        if [ -f "$GCP_KEY" ]; then
+            echo "Copying GCP service account key..."
+            scp -i "$PEM_KEY" "$GCP_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        else
+            echo -e "${YELLOW}⚠️  GCP service account key not found at $GCP_KEY${NC}"
+            echo -e "${YELLOW}   Pipeline will require manual gcloud authentication${NC}"
+        fi
+
+        # Copy config.yaml if it exists
+        if [ -f "config.yaml" ]; then
+            echo "Copying config.yaml..."
+            scp -i "$PEM_KEY" config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        fi
+
+        # Copy requirements.txt if it exists
+        if [ -f "requirements.txt" ]; then
+            echo "Copying requirements.txt..."
+            scp -i "$PEM_KEY" requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        fi
+
+        # Set proper permissions on remote
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod 600 .env gcp-service-account-key.json 2>/dev/null || true"
+
+        echo -e "${GREEN}✅ Configuration deployed${NC}"
+        echo ""
+        echo -e "${BLUE}Next steps:${NC}"
+        echo "  1. Connect to instance: $0 connect"
+        echo "  2. Install dependencies: pip install -r requirements.txt"
+        echo "  3. Run pipeline: ./run_pipeline.sh <min_id> <max_id>"
+        ;;
+
+    setup)
+        echo -e "${BLUE}Setting up AWS instance from scratch...${NC}"
+        echo ""
+
+        # First deploy config
+        echo -e "${BLUE}Step 1: Deploying configuration...${NC}"
+        "$0" deploy-config
+
+        echo ""
+        echo -e "${BLUE}Step 2: Syncing code...${NC}"
+        "$0" sync-code
+
+        echo ""
+        echo -e "${BLUE}Step 3: Installing dependencies on instance...${NC}"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
+cd ~/pdf_pipeline
+
+# Create virtual environment if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate and install dependencies
+source venv/bin/activate
+echo "Installing dependencies..."
+pip install --upgrade pip -q
+pip install -r requirements.txt -q
+
+# Create required directories
+echo "Creating directories..."
+mkdir -p data/{to_process,processed,processed_raw,processed_images,images}
+mkdir -p .generated
+
+echo "✅ Setup complete on remote instance"
+ENDSSH
+
+        echo ""
+        echo -e "${GREEN}✅ Instance setup complete!${NC}"
+        echo ""
+        echo -e "${BLUE}Test the setup:${NC}"
+        echo "  $0 connect"
+        echo "  ./run_pipeline.sh 27000 27010 10"
         ;;
 
     download-code)
@@ -196,25 +295,34 @@ ENDSSH
         echo ""
         echo "Usage: $0 <command> [arguments]"
         echo ""
-        echo "Commands:"
+        echo "Setup Commands:"
+        echo "  setup                Complete setup (config + code + deps)"
+        echo "  deploy-config        Deploy .env and GCP key to instance"
+        echo "  sync-code            Sync code changes to instance"
+        echo ""
+        echo "Operation Commands:"
         echo "  connect              SSH into instance"
         echo "  upload <file>        Upload PDF to to_process/"
         echo "  upload-dir <dir>     Upload all PDFs from directory"
-        echo "  download             Download results to ./aws_results/"
-        echo "  download-code        Download code from AWS (excludes aws_helper.sh)"
         echo "  run                  Run full pipeline on instance"
         echo "  run-md-only          Run pipeline (stop after markdown)"
-        echo "  logs                 View processing logs"
         echo "  status               Check instance status"
-        echo "  sync-code            Sync code changes to instance"
+        echo "  logs                 View processing logs"
+        echo ""
+        echo "Download Commands:"
+        echo "  download             Download results to ./aws_results/"
+        echo "  download-code        Download code from AWS (excludes aws_helper.sh)"
+        echo ""
+        echo "Maintenance Commands:"
         echo "  clean                Remove all processed files on instance"
         echo ""
         echo "Examples:"
-        echo "  $0 upload my_report.pdf"
-        echo "  $0 upload-dir ./pdfs/"
-        echo "  $0 run"
-        echo "  $0 download"
-        echo "  $0 download-code"
+        echo "  $0 setup                    # First-time setup"
+        echo "  $0 deploy-config            # Update config files only"
+        echo "  $0 sync-code                # Update code only"
+        echo "  $0 upload-dir ./pdfs/       # Upload PDFs"
+        echo "  $0 run                      # Run pipeline"
+        echo "  $0 download                 # Download results"
         exit 1
         ;;
 esac

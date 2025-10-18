@@ -1,10 +1,13 @@
 #!/bin/bash
 
 ################################################################################
-# GCP Service Account Setup Script
+# LOCAL_1_setup_gcp_auth.sh
 #
-# This script helps you create a service account for automated authentication
-# to Google Cloud Platform services (Vertex AI, GCS, Gemini API)
+# ONE-TIME SETUP: Creates GCP service account for automated authentication
+# Run this once on your LOCAL machine before deploying to AWS
+#
+# Creates: ~/gcp-service-account-key.json
+# Updates: .env file with GOOGLE_APPLICATION_CREDENTIALS
 ################################################################################
 
 set -e
