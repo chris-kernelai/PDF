@@ -427,7 +427,23 @@ def main():
         return 1
 
     with open(TRACKING_FILE, "r") as f:
-        jobs = json.load(f)
+        tracking_data = json.load(f)
+
+    # Handle both old format (list) and new format (dict with session_id)
+    if isinstance(tracking_data, list):
+        print("⚠️  Using legacy tracking format (no session filtering)")
+        jobs = tracking_data
+        session_id = None
+    elif isinstance(tracking_data, dict) and "jobs" in tracking_data:
+        jobs = tracking_data["jobs"]
+        session_id = tracking_data.get("session_id")
+        session_start = tracking_data.get("session_start")
+        print(f"🔑 Session ID: {session_id}")
+        print(f"📅 Session started: {session_start}")
+        print(f"📊 Jobs in this session: {len(jobs)}")
+    else:
+        print("❌ Invalid tracking file format")
+        return 1
 
     if not jobs:
         print("❌ No jobs recorded in tracking file")

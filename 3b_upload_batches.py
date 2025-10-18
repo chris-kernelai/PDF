@@ -19,6 +19,7 @@ import glob
 import json
 import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,9 @@ from google.genai.types import CreateBatchJobConfig
 # Load environment
 # -------------------------------------------------------------------
 load_dotenv()
+
+# Generate unique session ID for this upload run
+SESSION_ID = str(uuid.uuid4())[:8]  # Short UUID for readability
 
 
 # -------------------------------------------------------------------
@@ -217,6 +221,7 @@ def main():
     print("🚀 Gemini Batch Uploader")
     print("=" * 40)
     print(f"📁 Using batch prefix: {args.batch_prefix}")
+    print(f"🔑 Session ID: {SESSION_ID}")
 
     # Validate environment before proceeding
     validate_environment(args.mode)
@@ -286,6 +291,7 @@ def main():
                     "batch_file": batch_file,
                     "job_name": job_name,
                     "timestamp": datetime.now().isoformat(),
+                    "session_id": SESSION_ID,
                 }
             )
             print(f"   ✅ Job created: {job_name}")
@@ -296,12 +302,18 @@ def main():
             print(traceback.format_exc())
             continue
 
-    # Save tracking info
+    # Save tracking info with session metadata
     if processed_files:
         tracking_file = os.path.join(batch_folder, "batch_jobs_tracking.json")
+        tracking_data = {
+            "session_id": SESSION_ID,
+            "session_start": datetime.now().isoformat(),
+            "jobs": processed_files
+        }
         with open(tracking_file, "w") as f:
-            json.dump(processed_files, f, indent=2)
+            json.dump(tracking_data, f, indent=2)
         print(f"\n📝 Job tracking saved to: {tracking_file}")
+        print(f"   Session ID: {SESSION_ID} (use this to filter downloads)")
 
     if batch_jobs:
         print(f"\n✅ SUCCESS! Created {len(batch_jobs)} batch jobs:")
