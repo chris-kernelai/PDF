@@ -176,58 +176,80 @@ fi
 
 # Count total PDFs to process
 TOTAL_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
-if [ "$TOTAL_PDFS" -eq 0 ]; then
-    warn "No PDFs found to process. Exiting."
+
+# Count markdowns that need image processing
+PROCESSED_MDS=$(find data/processed -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+PROCESSED_IMAGES_MDS=$(find data/processed_images -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+NEED_IMAGE_PROCESSING=$(( PROCESSED_MDS - PROCESSED_IMAGES_MDS ))
+
+if [ "$TOTAL_PDFS" -eq 0 ] && [ "$NEED_IMAGE_PROCESSING" -le 0 ]; then
+    warn "No PDFs found to process and no markdowns need image processing. Exiting."
     exit 0
 fi
 
-info "Found $TOTAL_PDFS PDFs to process"
-NUM_BATCHES=$(( (TOTAL_PDFS + BATCH_SIZE - 1) / BATCH_SIZE ))
-info "Will process in $NUM_BATCHES batch(es) of up to $BATCH_SIZE documents each"
+if [ "$TOTAL_PDFS" -eq 0 ]; then
+    info "No PDFs to process, but $NEED_IMAGE_PROCESSING markdown(s) need image processing"
+    info "Skipping PDF conversion, proceeding to image description pipeline"
+fi
+
+if [ "$TOTAL_PDFS" -gt 0 ]; then
+    info "Found $TOTAL_PDFS PDFs to process"
+    NUM_BATCHES=$(( (TOTAL_PDFS + BATCH_SIZE - 1) / BATCH_SIZE ))
+    info "Will process in $NUM_BATCHES batch(es) of up to $BATCH_SIZE documents each"
+else
+    NUM_BATCHES=1  # One batch for image processing only
+fi
 echo ""
 
 # Process in batches
 BATCH_NUM=1
 PROCESSED_COUNT=0
 
-while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
+# Run at least once if there's work to do (PDFs or image processing needed)
+while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED_IMAGE_PROCESSING" -gt 0 ]; do
     log "=========================================="
     log "BATCH $BATCH_NUM/$NUM_BATCHES"
     log "=========================================="
 
-    # Count remaining PDFs
-    REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_BATCH_SIZE=$(( REMAINING_PDFS < BATCH_SIZE ? REMAINING_PDFS : BATCH_SIZE ))
+    # Step 2: Convert PDFs to Markdown (only if there are PDFs)
+    if [ "$TOTAL_PDFS" -gt 0 ]; then
+        # Count remaining PDFs
+        REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+        CURRENT_BATCH_SIZE=$(( REMAINING_PDFS < BATCH_SIZE ? REMAINING_PDFS : BATCH_SIZE ))
 
-    info "Processing $CURRENT_BATCH_SIZE documents in this batch"
-    info "Progress: $PROCESSED_COUNT/$TOTAL_PDFS documents processed so far"
-    echo ""
+        info "Processing $CURRENT_BATCH_SIZE documents in this batch"
+        info "Progress: $PROCESSED_COUNT/$TOTAL_PDFS documents processed so far"
+        echo ""
 
-    # Step 2: Convert PDFs to Markdown
-    log "STEP 2: Converting PDFs to Markdown (batch $BATCH_NUM)"
+        log "STEP 2: Converting PDFs to Markdown (batch $BATCH_NUM)"
 
-    # Create a temporary marker to track which PDFs are in this batch
-    BATCH_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | head -n "$BATCH_SIZE")
-    BATCH_PDF_COUNT=$(echo "$BATCH_PDFS" | grep -c "doc_" || true)
+        # Create a temporary marker to track which PDFs are in this batch
+        BATCH_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | head -n "$BATCH_SIZE")
+        BATCH_PDF_COUNT=$(echo "$BATCH_PDFS" | grep -c "doc_" || true)
 
-    if [ "$BATCH_PDF_COUNT" -eq 0 ]; then
-        warn "No PDFs left to process in this batch"
-        break
+        if [ "$BATCH_PDF_COUNT" -eq 0 ]; then
+            warn "No PDFs left to process in this batch"
+            break
+        fi
+
+        python3 2_batch_convert_pdfs.py \
+            data/to_process \
+            data/processed \
+            --batch-size 2 \
+            --extract-images
+
+        if [ $? -ne 0 ]; then
+            error "PDF conversion failed for batch $BATCH_NUM"
+            exit 1
+        fi
+
+        log "✓ PDF conversion complete for batch $BATCH_NUM"
+        echo ""
+    else
+        log "STEP 2: Skipping PDF conversion (no PDFs to process)"
+        CURRENT_BATCH_SIZE=0
+        echo ""
     fi
-
-    python3 2_batch_convert_pdfs.py \
-        data/to_process \
-        data/processed \
-        --batch-size 2 \
-        --extract-images
-
-    if [ $? -ne 0 ]; then
-        error "PDF conversion failed for batch $BATCH_NUM"
-        exit 1
-    fi
-
-    log "✓ PDF conversion complete for batch $BATCH_NUM"
-    echo ""
 
     # Step 3: Image Description Pipeline
     log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
@@ -337,6 +359,12 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ]; do
     # Update counters
     PROCESSED_COUNT=$((PROCESSED_COUNT + CURRENT_BATCH_SIZE))
     BATCH_NUM=$((BATCH_NUM + 1))
+
+    # If we're only doing image processing (no PDFs), exit after one iteration
+    if [ "$TOTAL_PDFS" -eq 0 ]; then
+        log "Image processing complete (no PDFs to process)!"
+        break
+    fi
 
     # Check if there are more PDFs to process
     REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
