@@ -271,9 +271,10 @@ def process_extracted_images(
 ) -> bool:
     """
     Process pre-extracted images and create batch files.
+    Only processes images for documents that have corresponding markdown files in processed/.
 
     Args:
-        images_folder: Folder containing extracted images (processed_images/)
+        images_folder: Folder containing extracted images (images/)
         output_folder: Output folder for batch files
         mode: 'developer' or 'vertex'
         batch_size: Number of images per batch file
@@ -286,14 +287,42 @@ def process_extracted_images(
     batches_dir = output_folder / "image_description_batches"
     batches_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find all document folders
-    doc_folders = [d for d in images_folder.iterdir() if d.is_dir() and not d.name.startswith('.')]
+    # Always check against processed/ folder to ensure documents are fully converted
+    processed_folder = Path("processed")
 
-    if not doc_folders:
+    # Find all document folders
+    all_doc_folders = [d for d in images_folder.iterdir() if d.is_dir() and not d.name.startswith('.')]
+
+    if not all_doc_folders:
         logger.error(f"No document folders found in {images_folder}")
         return False
 
-    logger.info(f"📁 Found {len(doc_folders)} document folders")
+    logger.info(f"📁 Found {len(all_doc_folders)} document folders in images folder")
+
+    # Filter to only include folders with corresponding markdown files
+    doc_folders = []
+    skipped_folders = []
+
+    for doc_folder in all_doc_folders:
+        doc_id = doc_folder.name
+        # Check for markdown file with doc_ prefix
+        expected_md_path = processed_folder / f"doc_{doc_id}.md"
+
+        if expected_md_path.exists():
+            doc_folders.append(doc_folder)
+        else:
+            skipped_folders.append(doc_id)
+            logger.debug(f"⏭️  Skipping {doc_id}: no markdown file found at {expected_md_path}")
+
+    if skipped_folders:
+        logger.info(f"⏭️  Skipped {len(skipped_folders)} folders without markdown files")
+
+    if not doc_folders:
+        logger.warning(f"No document folders have corresponding markdown files in {processed_folder}")
+        logger.warning("Make sure documents have been fully processed before preparing image batches")
+        return False
+
+    logger.info(f"✅ Processing {len(doc_folders)} document folders with markdown files")
 
     # Collect all images
     all_image_data = []
@@ -394,7 +423,7 @@ def process_extracted_images(
     print(f"📦 Batch files created: {len(batch_files_created)}")
     print(f"📁 Batches directory: {batches_dir}")
     print("\nNext step:")
-    print(f"  python gemini_batch_uploader.py {mode} --batch-prefix {batches_dir.name}")
+    print(f"  python gemini_batch_uploader.py")
     print("=" * 60)
 
     return True
@@ -419,8 +448,8 @@ def main():
     parser.add_argument(
         "--images-folder",
         type=Path,
-        default=Path("processed_images"),
-        help="Folder containing extracted images (default: processed_images)",
+        default=Path("images"),
+        help="Folder containing extracted images (default: images)",
     )
     parser.add_argument(
         "--output-folder",

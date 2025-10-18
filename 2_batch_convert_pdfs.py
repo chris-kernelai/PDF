@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import logging
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 from functools import partial
 
 import httpx
@@ -117,6 +118,7 @@ def _process_single_pdf_worker(
     do_cell_matching: bool,
     ocr_confidence_threshold: float,
     add_page_numbers: bool,
+    chunk_page_limit: int,
 ) -> Tuple[str, str, bool, str, int, int, float]:
     """
     Worker function for converting a single PDF in a separate process.
@@ -201,35 +203,123 @@ def _process_single_pdf_worker(
         )
 
         try:
-            start_time = time.time()
-
-            # Convert PDF
-            markdown, document, page_count = converter.convert_pdf(pdf_file)
-            processing_time = time.time() - start_time
-
-            # Extract images
             doc_id = pdf_file.stem
             if doc_id.startswith('doc_'):
                 doc_id = doc_id[4:]
 
-            image_count = converter.extract_images(
-                document,
-                Path(images_output_dir),
-                doc_id
-            )
+            # Prepare chunking if needed
+            chunk_paths: List[Path] = [pdf_file]
+            page_offsets: List[int] = [0]
+            chunked = False
+            try:
+                parsed_chunk_limit = int(chunk_page_limit)
+            except (TypeError, ValueError):
+                parsed_chunk_limit = 0
+            chunk_page_limit = max(0, parsed_chunk_limit)
+
+            chunk_temp_dir: Optional[Path] = None
+
+            if chunk_page_limit > 0:
+                try:
+                    from pypdf import PdfReader, PdfWriter
+
+                    reader = PdfReader(str(pdf_file))
+                    total_pages = len(reader.pages)
+                    if total_pages > chunk_page_limit:
+                        chunked = True
+                        chunk_paths = []
+                        page_offsets = []
+                        chunk_temp_dir = Path(tempfile.mkdtemp(prefix="pdf_chunks_"))
+
+                        for start in range(0, total_pages, chunk_page_limit):
+                            writer = PdfWriter()
+                            end = min(start + chunk_page_limit, total_pages)
+                            for page_idx in range(start, end):
+                                writer.add_page(reader.pages[page_idx])
+
+                            chunk_file = chunk_temp_dir / f"{pdf_file.stem}_part_{len(chunk_paths) + 1}.pdf"
+                            with open(chunk_file, "wb") as chunk_fp:
+                                writer.write(chunk_fp)
+
+                            chunk_paths.append(chunk_file)
+                            page_offsets.append(start)
+                except ImportError:
+                    logging.warning(
+                        "pypdf not available; skipping chunked processing for %s",
+                        pdf_file.name,
+                    )
+                except Exception as chunk_error:
+                    logging.warning(
+                        "Failed to chunk %s (%s); proceeding without chunking",
+                        pdf_file.name,
+                        chunk_error,
+                    )
+
+            combined_markdown_parts: List[str] = []
+            total_page_count = 0
+            total_image_count = 0
+            total_processing_time = 0.0
+
+            for idx, chunk_path in enumerate(chunk_paths):
+                page_offset = page_offsets[idx]
+                chunk_label = f"part {idx + 1}" if chunked else "full document"
+
+                start_time = time.time()
+                markdown, document, page_count = converter.convert_pdf(
+                    chunk_path,
+                    page_offset=page_offset,
+                )
+                chunk_processing_time = time.time() - start_time
+
+                image_count = converter.extract_images(
+                    document,
+                    Path(images_output_dir),
+                    doc_id,
+                    page_offset=page_offset,
+                )
+
+                total_processing_time += chunk_processing_time
+                total_page_count += page_count
+                total_image_count += image_count
+
+                if chunked:
+                    combined_markdown_parts.append(
+                        f"\n<!-- CHUNK START: {chunk_label} (pages {page_offset + 1}-{page_offset + page_count}) -->\n\n"
+                    )
+
+                combined_markdown_parts.append(markdown)
+
+                if chunked:
+                    combined_markdown_parts.append(
+                        f"\n<!-- CHUNK END: {chunk_label} -->\n"
+                    )
+
+            combined_markdown = "".join(combined_markdown_parts)
+
+            if chunk_temp_dir and chunk_temp_dir.exists():
+                try:
+                    import shutil
+
+                    shutil.rmtree(chunk_temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
             # Add metadata header
-            metadata_header = f"""---
-**Document:** {pdf_file.name}
-**Pages:** {page_count}
-**Images Extracted:** {image_count}
-**Images Location:** images/{doc_id}/
-**Processing Time:** {processing_time:.2f} seconds
-**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
----
+            metadata_lines = [
+                "---",
+                f"**Document:** {pdf_file.name}",
+                f"**Pages:** {total_page_count}",
+                f"**Images Extracted:** {total_image_count}",
+                f"**Images Location:** images/{doc_id}/",
+                f"**Processing Time:** {total_processing_time:.2f} seconds",
+            ]
+            if chunked:
+                metadata_lines.append(f"**Chunks:** {len(chunk_paths)} (limit {chunk_page_limit} pages)")
+            metadata_lines.append(f"**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            metadata_lines.append("---\n\n")
 
-"""
-            raw_markdown = metadata_header + markdown
+            metadata_header = "\n".join(metadata_lines)
+            raw_markdown = metadata_header + combined_markdown
 
             # Clean repeating characters
             cleaned_markdown = clean_repeating_characters(raw_markdown)
@@ -252,9 +342,9 @@ def _process_single_pdf_worker(
                 output_path,
                 True,
                 "",
-                image_count,
-                page_count,
-                processing_time,
+                total_image_count,
+                total_page_count,
+                total_processing_time,
             )
 
         finally:
@@ -294,6 +384,7 @@ class BatchDoclingConverter:
         upload_document_type: str = "FILING",
         doc_type: str = "both",
         extract_images: bool = False,
+        chunk_page_limit: int = 75,
     ):
         """
         Initialize the batch converter.
@@ -317,7 +408,8 @@ class BatchDoclingConverter:
             upload_ticker: Ticker symbol for the uploaded documents.
             upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
             doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
-            extract_images: Whether to extract and save images from PDFs (default: False).
+        extract_images: Whether to extract and save images from PDFs (default: False).
+        chunk_page_limit: Maximum pages per chunk before splitting large PDFs (default: 75; 0 disables chunking).
         """
         self.input_folder = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -344,6 +436,7 @@ class BatchDoclingConverter:
 
         # Image extraction
         self.extract_images = extract_images
+        self.chunk_page_limit = chunk_page_limit
 
         # Processed documents tracker
         self.processed_tracker_file = Path("processed_documents.txt")
@@ -600,6 +693,7 @@ class BatchDoclingConverter:
             do_cell_matching=self.do_cell_matching,
             ocr_confidence_threshold=self.ocr_confidence_threshold,
             add_page_numbers=self.add_page_numbers,
+            chunk_page_limit=self.chunk_page_limit,
         )
 
         # Unpack result
@@ -646,8 +740,12 @@ class BatchDoclingConverter:
         results = []
 
         # Use ProcessPoolExecutor for true parallelism
-        executor = ProcessPoolExecutor(max_workers=max_workers)
-        try:
+        spawn_ctx = multiprocessing.get_context("spawn")
+
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=spawn_ctx,
+        ) as executor:
             # Submit all tasks
             future_to_pdf = {}
             for pdf_file in pdf_files:
@@ -691,6 +789,7 @@ class BatchDoclingConverter:
                     self.do_cell_matching,
                     self.ocr_confidence_threshold,
                     self.add_page_numbers,
+                    self.chunk_page_limit,
                 )
                 future_to_pdf[future] = pdf_file
 
@@ -751,12 +850,6 @@ class BatchDoclingConverter:
                         0.0
                     ))
 
-        finally:
-            # Ensure executor is properly shut down
-            self.logger.info("Shutting down process pool...")
-            executor.shutdown(wait=True, cancel_futures=_shutdown_requested)
-            self.logger.info("Process pool shutdown complete")
-
         return results
 
     async def convert_all(self) -> Dict[str, int]:
@@ -791,6 +884,15 @@ class BatchDoclingConverter:
         # Update statistics, upload files, and remove successfully processed files
         # Note: We need to run upload in async context if enabled
         upload_tasks = []
+
+        oom_signatures = (
+            "cuda out of memory",
+            "cuda error: out of memory",
+            "cublas error: an illegal memory access was encountered",
+            "out of memory on device",
+            "hip out of memory",
+            "resource exhausted",
+        )
 
         for input_path, _output_path, success, error_msg, image_count, _page_count, _processing_time in results:
             # Handle files that were rejected during file type detection (empty output_path)
@@ -848,6 +950,17 @@ class BatchDoclingConverter:
             else:
                 # Conversion failed
                 self.stats["failed_files"] += 1
+
+                # If we ran out of GPU memory, leave the PDF in place and pause briefly
+                lowered_error = (error_msg or "").lower()
+                if any(signature in lowered_error for signature in oom_signatures):
+                    self.logger.warning(
+                        "GPU memory exhausted while processing %s; leaving PDF for retry and pausing 10 seconds",
+                        input_path.name,
+                    )
+                    await asyncio.sleep(10)
+                    continue
+
 
         # Handle uploads asynchronously if needed
         if upload_tasks:
@@ -926,6 +1039,7 @@ async def convert_folder(
     upload_document_type: str = "FILING",
     doc_type: str = "both",
     extract_images: bool = False,
+    chunk_page_limit: int = 75,
 ) -> Dict[str, int]:
     """
     Convert all PDF files in a folder to Markdown.
@@ -949,6 +1063,7 @@ async def convert_folder(
         upload_document_type: Type of document - "FILING" or "CALL_TRANSCRIPT" (default: "FILING").
         doc_type: Type of documents to process - "filings", "slides", or "both" (default: "both").
         extract_images: Whether to extract and save images from PDFs (default: False).
+        chunk_page_limit: Maximum pages processed per chunk (default: 75; 0 disables chunking).
 
     Returns:
         Dictionary containing conversion statistics.
@@ -972,6 +1087,7 @@ async def convert_folder(
         upload_document_type=upload_document_type,
         doc_type=doc_type,
         extract_images=extract_images,
+        chunk_page_limit=chunk_page_limit,
     )
 
     try:
@@ -1083,6 +1199,12 @@ def main():
         action="store_true",
         help="Extract and save images from PDFs to processed_images/ folder",
     )
+    parser.add_argument(
+        "--chunk-page-limit",
+        type=int,
+        default=75,
+        help="Split PDFs into chunks with at most this many pages before processing (0 disables chunking)",
+    )
 
     args = parser.parse_args()
 
@@ -1110,6 +1232,7 @@ def main():
             upload_document_type=args.upload_document_type,
             doc_type=args.doc_type,
             extract_images=args.extract_images,
+            chunk_page_limit=args.chunk_page_limit,
         )
     )
 

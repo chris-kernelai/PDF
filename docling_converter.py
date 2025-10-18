@@ -132,7 +132,9 @@ class DoclingConverter:
         self,
         document: DoclingDocument,
         output_dir: Path,
-        doc_id: str
+        doc_id: str,
+        *,
+        page_offset: int = 0,
     ) -> int:
         """
         Extract images from a DoclingDocument and save them to disk.
@@ -171,8 +173,10 @@ class DoclingConverter:
                 # Image index for this document
                 img_idx = image_count + 1
 
+                global_page_num = page_num + page_offset
+
                 # Save image
-                image_filename = f"page_{page_num:03d}_img_{img_idx:02d}.png"
+                image_filename = f"page_{global_page_num:03d}_img_{img_idx:02d}.png"
                 image_path = doc_output_dir / image_filename
                 pil_image.save(image_path, "PNG")
 
@@ -183,7 +187,12 @@ class DoclingConverter:
 
         return image_count
 
-    def convert_pdf(self, pdf_source: Union[str, Path]) -> Tuple[str, DoclingDocument, int]:
+    def convert_pdf(
+        self,
+        pdf_source: Union[str, Path],
+        *,
+        page_offset: int = 0,
+    ) -> Tuple[str, DoclingDocument, int]:
         """
         Convert a PDF file to Markdown.
 
@@ -238,10 +247,10 @@ class DoclingConverter:
             result_markdown = ""
             for i in range(page_count):
                 if self.add_page_numbers:
-                    result_markdown += f"Page {i + 1}\n"
+                    result_markdown += f"Page {page_offset + i + 1}\n"
                 result_markdown += document.export_to_markdown(page_no=i)
                 if i < page_count - 1:  # Don't add marker after last page
-                    result_markdown += f"\n\n<!-- PAGE {i + 1} -->\n\n"
+                    result_markdown += f"\n\n<!-- PAGE {page_offset + i + 1} -->\n\n"
 
             return result_markdown, document, page_count
 
