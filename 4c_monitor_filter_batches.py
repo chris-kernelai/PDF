@@ -133,7 +133,22 @@ def main():
         return 1
 
     with open(tracking_file, "r") as f:
-        jobs = json.load(f)
+        tracking_data = json.load(f)
+
+    # Require new format with session_id
+    if isinstance(tracking_data, list):
+        print("❌ Old tracking file format detected (no session_id)")
+        print("   Please re-run 4b_upload_filter_batches.py to generate new session")
+        return 1
+    elif isinstance(tracking_data, dict) and "jobs" in tracking_data:
+        jobs = tracking_data["jobs"]
+        session_id = tracking_data.get("session_id")
+        session_start = tracking_data.get("session_start")
+        print(f"🔑 Session ID: {session_id}")
+        print(f"📅 Session started: {session_start}")
+    else:
+        print("❌ Invalid tracking file format")
+        return 1
 
     if not jobs:
         print("❌ No jobs recorded in tracking file")
