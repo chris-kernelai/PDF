@@ -272,16 +272,11 @@ def _process_single_pdf_worker(
                             chunk_paths.append(chunk_file)
                             page_offsets.append(start)
                 except ImportError:
-                    logging.warning(
-                        "pypdf not available; skipping chunked processing for %s",
-                        pdf_file.name,
-                    )
+                    error_msg = f"pypdf not available; cannot chunk {pdf_file.name} (chunking required)"
+                    return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
                 except Exception as chunk_error:
-                    logging.warning(
-                        "Failed to chunk %s (%s); proceeding without chunking",
-                        pdf_file.name,
-                        chunk_error,
-                    )
+                    error_msg = f"Failed to chunk {pdf_file.name} ({chunk_error}); chunking required but failed"
+                    return (pdf_file_path, "", False, error_msg, 0, 0, 0.0)
 
             combined_markdown_parts: List[str] = []
             total_page_count = 0
