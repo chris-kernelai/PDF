@@ -1,9 +1,11 @@
 #!/bin/bash
 
 ################################################################################
-# SETUP_1_verify_environment.sh
+# SETUP_2_verify_environment.sh
 #
-# Run this ON AWS instance to verify environment is ready
+# STEP 2: Run this ON AWS instance to verify environment is ready
+#
+# Run this AFTER SETUP_1_python_venv.sh to check everything is working
 #
 # This checks:
 #   - Virtual environment exists and has packages
@@ -45,11 +47,18 @@ if [ -d "venv" ]; then
 
     # Check each package individually
     python3 -c "import docling" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES docling"
-    python3 -c "import boto3" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES boto3"
-    python3 -c "import psycopg2" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES psycopg2"
+    python3 -c "import psycopg2" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES psycopg2-binary"
     python3 -c "import google.cloud.aiplatform" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES google-cloud-aiplatform"
+    python3 -c "import google.genai" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES google-generativeai"
     python3 -c "import aiohttp" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES aiohttp"
-    python3 -c "import python_dotenv" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES python-dotenv"
+    python3 -c "import aiofiles" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES aiofiles"
+    python3 -c "import dotenv" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES python-dotenv"
+    python3 -c "import yaml" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES pyyaml"
+    python3 -c "import PIL" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES Pillow"
+    python3 -c "import boto3" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES boto3"
+    python3 -c "import aioboto3" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES aioboto3"
+    python3 -c "import asyncpg" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES asyncpg"
+    python3 -c "import httpx" 2>/dev/null || MISSING_PACKAGES="$MISSING_PACKAGES httpx"
 
     if [ -z "$MISSING_PACKAGES" ]; then
         echo -e "${GREEN}✓${NC}"

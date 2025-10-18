@@ -117,7 +117,7 @@ case "$1" in
     sync-code)
         echo -e "${BLUE}Syncing code changes to instance...${NC}"
 
-        # Sync Python scripts
+        # Sync Python scripts (excluding venv, data, .generated)
         scp -i "$PEM_KEY" *.py "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
 
         # Sync shell scripts
@@ -131,7 +131,7 @@ case "$1" in
         # Make scripts executable
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod +x *.sh"
 
-        echo -e "${GREEN}✅ Code synced${NC}"
+        echo -e "${GREEN}✅ Code synced (venv, data, and .generated excluded)${NC}"
         ;;
 
     deploy-config)
