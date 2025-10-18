@@ -6,20 +6,35 @@
 # This script runs the entire PDF processing pipeline in batches of 500 documents
 # to avoid GPU memory overflow. It processes documents within a specified ID range.
 #
-# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--background]
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--background] [--skip-download]
 #
 # Examples:
 #   ./run_pipeline.sh 27000 30000 500             # Run interactively
 #   ./run_pipeline.sh 27000 30000 500 --background # Run in background with nohup
+#   ./run_pipeline.sh 27000 30000 500 --skip-download # Skip document fetching step
 ################################################################################
 
-# Check if running in background mode
+# Parse flags
 BACKGROUND_MODE=false
-if [[ "${@: -1}" == "--background" ]] || [[ "${@: -1}" == "-b" ]]; then
-    BACKGROUND_MODE=true
-    # Remove the flag from arguments
-    set -- "${@:1:$(($#-1))}"
-fi
+SKIP_DOWNLOAD=false
+ARGS=()
+
+for arg in "$@"; do
+    case $arg in
+        --background|-b)
+            BACKGROUND_MODE=true
+            ;;
+        --skip-download|-s)
+            SKIP_DOWNLOAD=true
+            ;;
+        *)
+            ARGS+=("$arg")
+            ;;
+    esac
+done
+
+# Reset positional parameters to non-flag arguments
+set -- "${ARGS[@]}"
 
 # If background mode and this is the parent process, relaunch with nohup
 if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
@@ -28,8 +43,10 @@ if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
     echo "📝 Log file: $LOG_FILE"
     echo ""
 
-    # Relaunch with nohup
-    PIPELINE_CHILD=1 nohup "$0" "$@" > "$LOG_FILE" 2>&1 &
+    # Relaunch with nohup, passing through flags
+    EXTRA_FLAGS=""
+    [ "$SKIP_DOWNLOAD" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --skip-download"
+    PIPELINE_CHILD=1 nohup "$0" "$@" $EXTRA_FLAGS > "$LOG_FILE" 2>&1 &
     PID=$!
 
     echo "✅ Pipeline started with PID: $PID"
@@ -90,11 +107,12 @@ trap cleanup_on_error ERR
 
 # Parse arguments
 if [ $# -lt 2 ]; then
-    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size] [--background|-b]"
+    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size] [--background|-b] [--skip-download|-s]"
     echo ""
     echo "Examples:"
-    echo "  $0 27000 30000 500              # Run interactively"
-    echo "  $0 27000 30000 500 --background # Run in background with nohup"
+    echo "  $0 27000 30000 500                # Run interactively"
+    echo "  $0 27000 30000 500 --background   # Run in background with nohup"
+    echo "  $0 27000 30000 500 --skip-download # Skip document fetching step"
     exit 1
 fi
 
@@ -132,23 +150,29 @@ log "PDF Processing Pipeline"
 log "=========================================="
 info "Document ID range: $MIN_DOC_ID to $MAX_DOC_ID"
 info "Batch size: $BATCH_SIZE documents"
+info "Skip download: $SKIP_DOWNLOAD"
 info "Working directory: $(pwd)"
 log "=========================================="
 echo ""
 
-# Step 1: Fetch documents
-log "STEP 1: Fetching documents (ID range: $MIN_DOC_ID - $MAX_DOC_ID)"
-python3 1_fetch_documents.py \
-    --min-doc-id "$MIN_DOC_ID" \
-    --max-doc-id "$MAX_DOC_ID"
+# Step 1: Fetch documents (optional)
+if [ "$SKIP_DOWNLOAD" = false ]; then
+    log "STEP 1: Fetching documents (ID range: $MIN_DOC_ID - $MAX_DOC_ID)"
+    python3 1_fetch_documents.py \
+        --min-doc-id "$MIN_DOC_ID" \
+        --max-doc-id "$MAX_DOC_ID"
 
-if [ $? -ne 0 ]; then
-    error "Document fetching failed"
-    exit 1
+    if [ $? -ne 0 ]; then
+        error "Document fetching failed"
+        exit 1
+    fi
+
+    log "✓ Document fetching complete"
+    echo ""
+else
+    log "STEP 1: Skipping document fetch (--skip-download flag set)"
+    echo ""
 fi
-
-log "✓ Document fetching complete"
-echo ""
 
 # Count total PDFs to process
 TOTAL_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')

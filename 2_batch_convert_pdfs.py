@@ -149,8 +149,13 @@ def _process_single_pdf_worker(
     import subprocess
     from pathlib import Path
 
-    # Force CPU if use_gpu is False by hiding GPUs from this process
-    if not use_gpu:
+    # Set up GPU memory limits BEFORE importing PyTorch/Docling
+    if use_gpu:
+        from src.gpu_memory_manager import setup_gpu_memory_limits
+        # Each worker can use 40% of GPU memory (allows 2 workers with headroom)
+        setup_gpu_memory_limits(memory_fraction=0.4, max_split_size_mb=128)
+    else:
+        # Force CPU if use_gpu is False by hiding GPUs from this process
         os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     pdf_file = Path(pdf_file_path)
@@ -195,6 +200,19 @@ def _process_single_pdf_worker(
         # If file type detection fails, try to proceed as PDF anyway
         pass
 
+    # Import GPU memory manager for retry logic
+    from src.gpu_memory_manager import (
+        set_process_gpu_memory_fraction,
+        clear_gpu_cache,
+        wait_for_gpu_memory,
+        is_oom_error,
+        log_gpu_memory_stats,
+    )
+
+    # Set per-process memory fraction after importing PyTorch (via DoclingConverter)
+    max_retries = 3
+    retry_count = 0
+
     try:
         # Create converter instance for this process
         converter = DoclingConverter(
@@ -206,6 +224,11 @@ def _process_single_pdf_worker(
             do_cell_matching=do_cell_matching,
             ocr_confidence_threshold=ocr_confidence_threshold,
         )
+
+        # Set GPU memory fraction after converter is initialized
+        if use_gpu:
+            set_process_gpu_memory_fraction(0.4)
+            log_gpu_memory_stats()
 
         try:
             doc_id = pdf_file.stem
@@ -269,23 +292,58 @@ def _process_single_pdf_worker(
                 page_offset = page_offsets[idx]
                 chunk_label = f"part {idx + 1}" if chunked else "full document"
 
-                start_time = time.time()
-                markdown, document, page_count = converter.convert_pdf(
-                    chunk_path,
-                    page_offset=page_offset,
-                )
-                chunk_processing_time = time.time() - start_time
+                # Retry loop for OOM errors
+                retry_count = 0
+                while retry_count <= max_retries:
+                    try:
+                        # Wait for GPU memory to be available before processing
+                        if use_gpu and retry_count > 0:
+                            clear_gpu_cache()
+                            if not wait_for_gpu_memory(required_mb=2000, timeout_seconds=180):
+                                raise RuntimeError("Timeout waiting for GPU memory")
 
-                image_count = converter.extract_images(
-                    document,
-                    Path(images_output_dir),
-                    doc_id,
-                    page_offset=page_offset,
-                )
+                        start_time = time.time()
+                        markdown, document, page_count = converter.convert_pdf(
+                            chunk_path,
+                            page_offset=page_offset,
+                        )
+                        chunk_processing_time = time.time() - start_time
 
-                total_processing_time += chunk_processing_time
-                total_page_count += page_count
-                total_image_count += image_count
+                        image_count = converter.extract_images(
+                            document,
+                            Path(images_output_dir),
+                            doc_id,
+                            page_offset=page_offset,
+                        )
+
+                        total_processing_time += chunk_processing_time
+                        total_page_count += page_count
+                        total_image_count += image_count
+
+                        # Success - break retry loop
+                        break
+
+                    except Exception as chunk_error:
+                        if is_oom_error(chunk_error):
+                            retry_count += 1
+                            if retry_count <= max_retries:
+                                logging.warning(
+                                    f"GPU OOM error processing {pdf_file.name} {chunk_label}, "
+                                    f"retry {retry_count}/{max_retries}: {chunk_error}"
+                                )
+                                clear_gpu_cache()
+                                time.sleep(5 * retry_count)  # Exponential backoff
+                                continue
+                            else:
+                                logging.error(
+                                    f"Failed after {max_retries} retries due to GPU OOM: {pdf_file.name}"
+                                )
+                                raise RuntimeError(
+                                    f"GPU out of memory after {max_retries} retries"
+                                ) from chunk_error
+                        else:
+                            # Non-OOM error, don't retry
+                            raise
 
                 if chunked:
                     combined_markdown_parts.append(
@@ -354,9 +412,16 @@ def _process_single_pdf_worker(
 
         finally:
             converter.cleanup()
+            # Clear GPU cache to ensure memory is freed
+            if use_gpu:
+                clear_gpu_cache()
+                log_gpu_memory_stats()
 
     except Exception as e:
         error_msg = f"Failed to convert {pdf_file.name}: {str(e)}"
+        # Clear GPU cache even on error
+        if use_gpu:
+            clear_gpu_cache()
         return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
 
 
