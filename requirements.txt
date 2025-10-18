@@ -12,3 +12,5 @@ aioboto3
 asyncpg
 boto3
 httpx
+pypdf
+easyocr
