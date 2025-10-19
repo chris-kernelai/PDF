@@ -37,11 +37,16 @@ class DocumentRepresentationUploader:
         s3_bucket: Optional[str] = None,
     ):
         # Load from environment variables with fallback to parameters
-        # If AWS_ACCESS_KEY_ID is set, don't use a profile (use env credentials directly)
+        # If AWS credentials are set explicitly, leave profile unset so boto3 uses them directly
+        env_profile = os.getenv("AWS_PROFILE")
         if os.getenv("AWS_ACCESS_KEY_ID"):
-            self.aws_profile = aws_profile  # None unless explicitly passed
+            self.aws_profile = aws_profile  # Explicit credentials take precedence
+        elif aws_profile:
+            self.aws_profile = aws_profile
+        elif env_profile:
+            self.aws_profile = env_profile
         else:
-            self.aws_profile = aws_profile or os.getenv("AWS_PROFILE", "production")
+            self.aws_profile = None  # Allow IAM role or default credential chain
         self.aws_region = aws_region or os.getenv("AWS_REGION", "eu-west-2")
         self.supabase_url = supabase_url or os.getenv("SUPABASE_URL")
         self.supabase_key = supabase_key or os.getenv("SUPABASE_KEY")
@@ -66,9 +71,10 @@ class DocumentRepresentationUploader:
     async def initialize(self):
         """Initialize S3 and database connections."""
         # Initialize S3 client
-        self.session = aioboto3.Session(
-            profile_name=self.aws_profile, region_name=self.aws_region
-        )
+        session_args: dict[str, str] = {"region_name": self.aws_region}
+        if self.aws_profile:
+            session_args["profile_name"] = self.aws_profile
+        self.session = aioboto3.Session(**session_args)
         self.s3_client = await self.session.client("s3").__aenter__()
 
         # Initialize database connection pool
