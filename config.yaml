@@ -18,16 +18,10 @@ filters:
     # Slides: include all countries (no exclusions)
     slide:
       exclude_countries: []
-    # Call transcripts: exclude US (include all other countries)
-    call_transcript:
-      exclude_countries:
-        - United States
-
   # Document types to fetch
   document_types:
     - filing
     - slide
-    - call_transcript
 
   # Optional date range (null = no limit)
   date_range:
