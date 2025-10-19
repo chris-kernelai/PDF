@@ -9,38 +9,19 @@ api:
 
 # Document filters
 filters:
-  # All non-US countries
-  countries:
-    - Canada
-    - United Kingdom
-    - Germany
-    - France
-    - Japan
-    - Australia
-    - Switzerland
-    - Netherlands
-    - Sweden
-    - Norway
-    - Denmark
-    - Finland
-    - Italy
-    - Spain
-    - Belgium
-    - Austria
-    - Ireland
-    - Portugal
-    - Luxembourg
-    - Greece
-    - Czech Republic
-    - Poland
-    - Hungary
-    - Slovakia
-    - Slovenia
-    - Estonia
-    - Latvia
-    - Lithuania
-    - Cyprus
-    - Malta
+  # Country exclusion filters by document type
+  countries_by_type:
+    # Filings: exclude US (include all other countries)
+    filing:
+      exclude_countries:
+        - United States
+    # Slides: include all countries (no exclusions)
+    slide:
+      exclude_countries: []
+    # Call transcripts: exclude US (include all other countries)
+    call_transcript:
+      exclude_countries:
+        - United States
 
   # Document types to fetch
   document_types:

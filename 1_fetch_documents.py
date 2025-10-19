@@ -390,7 +390,7 @@ class DocumentFetcher:
 
     def check_available_document_types(self) -> List[str]:
         """
-        Check all available document types in the database for non-US companies.
+        Check all available document types in the database.
         This helps identify if we're missing any document types in our config.
 
         Returns:
@@ -401,18 +401,15 @@ class DocumentFetcher:
         conn = self._get_db_connection()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Get all document types for non-US companies
-                countries = self.config["filters"]["countries"]
-
+                # Get all document types (no country filter for this check)
                 query = """
                     SELECT DISTINCT d.document_type::text
                     FROM librarian.kdocuments d
                     JOIN librarian.company c ON d.company_id = c.id
-                    WHERE c.country = ANY(%s::text[])
                     ORDER BY d.document_type::text
                 """
 
-                cur.execute(query, (countries,))
+                cur.execute(query)
                 results = cur.fetchall()
 
                 all_types = [row["document_type"] for row in results]
@@ -440,114 +437,91 @@ class DocumentFetcher:
         finally:
             conn.close()
 
-    def fetch_companies_from_db(self) -> List[Dict]:
+    def fetch_documents_by_type_from_db(self) -> List[Dict]:
         """
-        Fetch all non-US companies from database.
-
-        Returns:
-            List of company dictionaries.
-        """
-        self.logger.info("Fetching non-US companies from database...")
-
-        conn = self._get_db_connection()
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Build country filter
-                countries = self.config["filters"]["countries"]
-
-                cur.execute("""
-                    SELECT id, ticker, name, country
-                    FROM librarian.company
-                    WHERE country = ANY(%s::text[])
-                    ORDER BY id
-                """, (countries,))
-
-                companies = cur.fetchall()
-
-                # Convert to list of dicts
-                company_list = [dict(c) for c in companies]
-
-                # Track companies by country
-                for company in company_list:
-                    country = company.get("country", "Unknown")
-                    self.companies_by_country[country] += 1
-
-                self.stats["companies_found"] = len(company_list)
-                self.logger.info(f"Total companies found: {len(company_list)}")
-                return company_list
-        finally:
-            conn.close()
-
-    def fetch_documents_from_db(self, company_ids: List[int]) -> List[Dict]:
-        """
-        Fetch documents for given company IDs from database.
-
-        Args:
-            company_ids: List of company IDs to fetch documents for.
+        Fetch documents from database with type-specific country filters.
 
         Returns:
             List of document dictionaries with country information.
         """
-        self.logger.info(f"Fetching documents from database for {len(company_ids)} companies...")
+        self.logger.info("Fetching documents from database with type-specific country filters...")
 
         conn = self._get_db_connection()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Build query with filters
-                where_clauses = ["d.company_id = ANY(%s::int[])"]
-                params = [company_ids]
+                all_documents = []
+                
+                # Get document types and their country filters
+                doc_types = self.config["filters"]["document_types"]
+                countries_by_type = self.config["filters"]["countries_by_type"]
+                
+                for doc_type in doc_types:
+                    self.logger.info(f"Fetching {doc_type} documents...")
+                    
+                    # Get exclusion list for this document type
+                    exclude_countries = countries_by_type.get(doc_type, {}).get("exclude_countries", [])
+                    
+                    # Build query with filters
+                    where_clauses = ["d.document_type::text = %s"]
+                    params = [doc_type.upper()]
+                    
+                    # Country exclusion filter
+                    if exclude_countries:
+                        where_clauses.append("c.country != ALL(%s::text[])")
+                        params.append(exclude_countries)
+                        self.logger.info(f"  Excluding countries: {exclude_countries}")
+                    else:
+                        self.logger.info(f"  No country exclusions (including all countries)")
 
-                # Document type filter (cast to text to handle enum type)
-                doc_types = [dt.upper() for dt in self.config["filters"]["document_types"]]
-                where_clauses.append("d.document_type::text = ANY(%s::text[])")
-                params.append(doc_types)
+                    # Date range filters
+                    date_start = self.config["filters"]["date_range"].get("start")
+                    date_end = self.config["filters"]["date_range"].get("end")
+                    if date_start:
+                        where_clauses.append("d.published_at >= %s")
+                        params.append(date_start)
+                    if date_end:
+                        where_clauses.append("d.published_at <= %s")
+                        params.append(date_end)
 
-                # Date range filters
-                date_start = self.config["filters"]["date_range"].get("start")
-                date_end = self.config["filters"]["date_range"].get("end")
-                if date_start:
-                    where_clauses.append("d.published_at >= %s")
-                    params.append(date_start)
-                if date_end:
-                    where_clauses.append("d.published_at <= %s")
-                    params.append(date_end)
+                    # Document ID range filters
+                    if self.min_doc_id:
+                        where_clauses.append("d.id >= %s")
+                        params.append(self.min_doc_id)
+                    if self.max_doc_id:
+                        where_clauses.append("d.id <= %s")
+                        params.append(self.max_doc_id)
 
-                # Document ID range filters
-                if self.min_doc_id:
-                    where_clauses.append("d.id >= %s")
-                    params.append(self.min_doc_id)
-                if self.max_doc_id:
-                    where_clauses.append("d.id <= %s")
-                    params.append(self.max_doc_id)
+                    where_sql = " AND ".join(where_clauses)
 
-                where_sql = " AND ".join(where_clauses)
+                    query = f"""
+                        SELECT
+                            d.id,
+                            d.company_id,
+                            d.document_type,
+                            d.published_at as filing_date,
+                            d.source_identifier as title,
+                            d.created_at,
+                            d.updated_at,
+                            c.country,
+                            c.ticker,
+                            c.name as company_name
+                        FROM librarian.kdocuments d
+                        JOIN librarian.company c ON d.company_id = c.id
+                        WHERE {where_sql}
+                        ORDER BY d.id
+                    """
 
-                query = f"""
-                    SELECT
-                        d.id,
-                        d.company_id,
-                        d.document_type,
-                        d.published_at as filing_date,
-                        d.source_identifier as title,
-                        d.created_at,
-                        d.updated_at,
-                        c.country
-                    FROM librarian.kdocuments d
-                    JOIN librarian.company c ON d.company_id = c.id
-                    WHERE {where_sql}
-                    ORDER BY d.id
-                """
+                    self.logger.info(f"Executing query for {doc_type} with filters: min_doc_id={self.min_doc_id}, max_doc_id={self.max_doc_id}")
+                    cur.execute(query, params)
 
-                self.logger.info(f"Executing query with filters: min_doc_id={self.min_doc_id}, max_doc_id={self.max_doc_id}")
-                cur.execute(query, params)
-
-                documents = cur.fetchall()
-
-                # Convert to list of dicts
-                doc_list = [dict(d) for d in documents]
+                    documents = cur.fetchall()
+                    doc_list = [dict(d) for d in documents]
+                    
+                    self.logger.info(f"Found {len(doc_list)} {doc_type} documents")
+                    all_documents.extend(doc_list)
 
                 # Track document types and countries
-                for doc in doc_list:
+                for doc in all_documents:
                     doc_type_raw = doc.get("document_type", "")
                     doc_type = doc_type_raw.lower()
                     country = doc.get("country", "Unknown")
@@ -561,38 +535,41 @@ class DocumentFetcher:
                     # Track by type AND country
                     self.documents_by_type_and_country[doc_type_raw][country] += 1
 
+                    # Track companies by country
+                    self.companies_by_country[country] += 1
+
                     # Legacy stats (for backward compatibility)
                     if "filing" in doc_type:
                         self.stats["filings_found"] += 1
-                    if "slide" in doc_type:  # Changed to 'if' not 'elif' to catch both
+                    if "slide" in doc_type:
                         self.stats["slides_found"] += 1
 
-                self.stats["documents_found"] = len(doc_list)
+                self.stats["documents_found"] = len(all_documents)
+                self.stats["companies_found"] = len(set(doc["company_id"] for doc in all_documents))
+                
                 self.logger.info(
-                    f"Total documents found: {len(doc_list)} "
+                    f"Total documents found: {len(all_documents)} "
                     f"({self.stats['filings_found']} filings, {self.stats['slides_found']} slides)"
                 )
+                self.logger.info(f"Total unique companies: {self.stats['companies_found']}")
 
-                return doc_list
+                return all_documents
         finally:
             conn.close()
 
-    def _add_documents_to_metadata(
-        self, documents: List[Dict], company_lookup: Dict[int, Dict]
-    ):
+
+    def _add_documents_to_metadata(self, documents: List[Dict]):
         """
         Add documents to metadata database.
 
         Args:
             documents: List of document dictionaries.
-            company_lookup: Dictionary mapping company_id to company info.
         """
         self.logger.info("Adding documents to metadata database...")
 
         for doc in documents:
             document_id = doc.get("id")
             company_id = doc.get("company_id")
-            company = company_lookup.get(company_id, {})
 
             # Skip if both DOCLING and DOCLING_IMG representations already exist in Supabase
             if document_id in self.existing_representations:
@@ -618,9 +595,9 @@ class DocumentFetcher:
             added = self.metadata.add_document(
                 document_id=document_id,
                 company_id=company_id,
-                ticker=doc.get("ticker") or company.get("ticker", ""),
-                company_name=company.get("name", ""),
-                country=company.get("country", ""),
+                ticker=doc.get("ticker", ""),
+                company_name=doc.get("company_name", ""),
+                country=doc.get("country", ""),
                 document_type=doc.get("document_type", ""),
                 filing_date=doc.get("filing_date"),
                 title=doc.get("title", ""),
@@ -948,39 +925,28 @@ class DocumentFetcher:
 
     async def fetch_all(self, download_pdfs: bool = True):
         """
-        Main entry point: fetch all non-US documents from database.
+        Main entry point: fetch documents from database with type-specific country filters.
 
         Args:
             download_pdfs: Whether to download PDFs (True) or just populate metadata (False).
         """
-        self.logger.info("Starting document fetch process (querying database directly)...")
+        self.logger.info("Starting document fetch process with type-specific country filters...")
 
         # Step 0a: Check US documents (for reference)
         self.us_stats = self.check_us_documents()
         self.logger.info("")  # Blank line for readability
 
-        # Step 0b: Check what document types are available (non-US)
+        # Step 0b: Check what document types are available
         available_types = self.check_available_document_types()
 
-        # Step 1: Fetch companies from database
-        companies = self.fetch_companies_from_db()
-
-        if not companies:
-            self.logger.error("No companies found, aborting")
-            return
-
-        # Create company lookup
-        company_lookup = {c["id"]: c for c in companies}
-
-        # Step 2: Fetch documents from database
-        company_ids = [c["id"] for c in companies]
-        documents = self.fetch_documents_from_db(company_ids)
+        # Step 1: Fetch documents from database with type-specific filters
+        documents = self.fetch_documents_by_type_from_db()
 
         if not documents:
             self.logger.warning("No documents found")
             return
 
-        # Step 2.5: Check Supabase for existing representations
+        # Step 2: Check Supabase for existing representations
         document_ids = [doc["id"] for doc in documents]
         self.existing_representations = await self._fetch_existing_representations_from_supabase(
             document_ids
@@ -1001,7 +967,7 @@ class DocumentFetcher:
             self.logger.info(f"Limited to first {self.limit} documents")
 
         # Step 3: Add to metadata database
-        self._add_documents_to_metadata(documents, company_lookup)
+        self._add_documents_to_metadata(documents)
 
         # Print detailed statistics breakdown (before downloads start)
         self._print_detailed_statistics()
