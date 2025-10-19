@@ -225,14 +225,17 @@ case "$1" in
             scp -i "$PEM_KEY" requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
         fi
 
-        # Fix GOOGLE_APPLICATION_CREDENTIALS path in remote .env
-        echo "Fixing GOOGLE_APPLICATION_CREDENTIALS path in remote .env..."
+        # Fix GOOGLE_APPLICATION_CREDENTIALS path in remote .env and authenticate gcloud
+        echo "Fixing GOOGLE_APPLICATION_CREDENTIALS path and authenticating gcloud..."
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 if [ -f ".env" ] && [ -f "gcp-service-account-key.json" ]; then
-    # Update the path to point to the remote location
-    sed -i 's|GOOGLE_APPLICATION_CREDENTIALS=.*|GOOGLE_APPLICATION_CREDENTIALS=~/pdf_pipeline/gcp-service-account-key.json|g' .env
+    # Update the path to point to the remote location (use full path, not ~)
+    sed -i 's|GOOGLE_APPLICATION_CREDENTIALS=.*|GOOGLE_APPLICATION_CREDENTIALS=/home/ubuntu/pdf_pipeline/gcp-service-account-key.json|g' .env
     echo "✓ Updated GOOGLE_APPLICATION_CREDENTIALS path"
+
+    # Authenticate gcloud with the service account
+    gcloud auth activate-service-account --key-file=/home/ubuntu/pdf_pipeline/gcp-service-account-key.json 2>/dev/null && echo "✓ Authenticated gcloud with service account" || echo "⚠️  gcloud authentication skipped (gcloud may not be installed)"
 fi
 ENDSSH
 
@@ -265,7 +268,34 @@ ENDSSH
         "$0" sync-code "$INSTANCE_IP"
 
         echo ""
-        echo -e "${BLUE}Step 4: Installing dependencies on instance...${NC}"
+        echo -e "${BLUE}Step 4: Installing system dependencies (gcloud CLI)...${NC}"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
+# Install gcloud CLI if not already installed
+if ! command -v gcloud &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+
+    # Install prerequisites first
+    sudo apt-get update
+    sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+    # Import Google Cloud public key BEFORE adding the repo
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+
+    # NOW add Cloud SDK repo (after key is imported)
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+
+    # Update and install
+    sudo apt-get update
+    sudo apt-get install -y google-cloud-cli
+
+    echo "✅ gcloud CLI installed"
+else
+    echo "✓ gcloud CLI already installed"
+fi
+ENDSSH
+
+        echo ""
+        echo -e "${BLUE}Step 5: Installing Python dependencies on instance...${NC}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 

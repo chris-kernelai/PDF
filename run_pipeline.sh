@@ -6,7 +6,7 @@
 # This script runs the entire PDF processing pipeline in batches of 500 documents
 # to avoid GPU memory overflow. It processes documents within a specified ID range.
 #
-# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--batch-size <workers>] [--background] [--skip-download] [--cpu]
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--batch-size <workers>] [--background] [--skip-download] [--cpu] [--images-only]
 #
 # Examples:
 #   ./run_pipeline.sh 27000 30000 500                    # Run interactively
@@ -14,12 +14,14 @@
 #   ./run_pipeline.sh 27000 30000 500 --background       # Run in background with nohup
 #   ./run_pipeline.sh 27000 30000 500 --skip-download    # Skip document fetching step
 #   ./run_pipeline.sh 27000 30000 500 --cpu --batch-size 8  # CPU mode with 8 workers
+#   ./run_pipeline.sh 27000 30000 500 --images-only      # Only run image processing (skip PDF conversion)
 ################################################################################
 
 # Parse flags
 BACKGROUND_MODE=false
 SKIP_DOWNLOAD=false
 CPU_MODE=false
+IMAGES_ONLY=false
 WORKERS=2  # Default to 2 workers
 ARGS=()
 
@@ -35,6 +37,9 @@ while [ $i -le $# ]; do
             ;;
         --cpu|-c)
             CPU_MODE=true
+            ;;
+        --images-only|-i)
+            IMAGES_ONLY=true
             ;;
         --batch-size)
             ((i++))
@@ -61,6 +66,7 @@ if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
     EXTRA_FLAGS=""
     [ "$SKIP_DOWNLOAD" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --skip-download"
     [ "$CPU_MODE" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --cpu"
+    [ "$IMAGES_ONLY" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --images-only"
     [ "$WORKERS" != "2" ] && EXTRA_FLAGS="$EXTRA_FLAGS --batch-size $WORKERS"
     PIPELINE_CHILD=1 nohup "$0" "$@" $EXTRA_FLAGS > "$LOG_FILE" 2>&1 &
     PID=$!
@@ -123,12 +129,13 @@ trap cleanup_on_error ERR
 
 # Parse arguments
 if [ $# -lt 2 ]; then
-    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size] [--background|-b] [--skip-download|-s]"
+    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size] [--background|-b] [--skip-download|-s] [--images-only|-i]"
     echo ""
     echo "Examples:"
-    echo "  $0 27000 30000 500                # Run interactively"
-    echo "  $0 27000 30000 500 --background   # Run in background with nohup"
-    echo "  $0 27000 30000 500 --skip-download # Skip document fetching step"
+    echo "  $0 27000 30000 500                  # Run interactively"
+    echo "  $0 27000 30000 500 --background     # Run in background with nohup"
+    echo "  $0 27000 30000 500 --skip-download  # Skip document fetching step"
+    echo "  $0 27000 30000 500 --images-only    # Only run image processing (skip PDF conversion)"
     exit 1
 fi
 
@@ -169,6 +176,7 @@ info "Batch size: $BATCH_SIZE documents"
 info "Parallel workers: $WORKERS"
 info "Mode: $([ "$CPU_MODE" = true ] && echo "CPU" || echo "GPU")"
 info "Skip download: $SKIP_DOWNLOAD"
+info "Images only: $IMAGES_ONLY"
 info "Working directory: $(pwd)"
 log "=========================================="
 echo ""
@@ -229,8 +237,12 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "BATCH $BATCH_NUM/$NUM_BATCHES"
     log "=========================================="
 
-    # Step 2: Convert PDFs to Markdown (only if there are PDFs)
-    if [ "$TOTAL_PDFS" -gt 0 ]; then
+    # Step 2: Convert PDFs to Markdown (skip if --images-only flag is set)
+    if [ "$IMAGES_ONLY" = true ]; then
+        log "STEP 2: Skipping PDF conversion (--images-only flag set)"
+        CURRENT_BATCH_SIZE=0
+        echo ""
+    elif [ "$TOTAL_PDFS" -gt 0 ]; then
         # Count remaining PDFs
         REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
         CURRENT_BATCH_SIZE=$(( REMAINING_PDFS < BATCH_SIZE ? REMAINING_PDFS : BATCH_SIZE ))
