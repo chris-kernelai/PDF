@@ -29,11 +29,15 @@ get_instance_config() {
     case "$instance" in
         PDF)
             INSTANCE_IP="54.183.17.152"
+            INSTANCE_ID="i-09f9f69a561efe64c"
+            INSTANCE_REGION="us-west-1"
             PEM_KEY="PDF_key.pem"
             INSTANCE_TYPE="GPU (Tesla T4)"
             ;;
         PDF-London)
             INSTANCE_IP="35.178.204.146"
+            INSTANCE_ID="i-0131ec0698e8c7bbf"
+            INSTANCE_REGION="eu-west-2"
             PEM_KEY="PDF-London.pem"
             INSTANCE_TYPE="GPU (Tesla T4 London)"
             ;;
@@ -268,7 +272,30 @@ ENDSSH
         "$0" sync-code "$INSTANCE_IP"
 
         echo ""
-        echo -e "${BLUE}Step 4: Installing system dependencies (gcloud CLI)...${NC}"
+        echo -e "${BLUE}Step 4: Attaching IAM role for S3 access...${NC}"
+
+        # Check if instance already has IAM role
+        HAS_ROLE=$(aws ec2 describe-instances \
+            --region "$INSTANCE_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' \
+            --output text 2>/dev/null)
+
+        if [ "$HAS_ROLE" != "None" ] && [ -n "$HAS_ROLE" ]; then
+            echo "✓ IAM role already attached: $HAS_ROLE"
+        else
+            echo "Attaching IAM role: PDF-Pipeline-EC2-Profile..."
+
+            # Attach the instance profile
+            aws ec2 associate-iam-instance-profile \
+                --region "$INSTANCE_REGION" \
+                --instance-id "$INSTANCE_ID" \
+                --iam-instance-profile Name=PDF-Pipeline-EC2-Profile \
+                2>/dev/null && echo "✅ IAM role attached" || echo "⚠️  Failed to attach IAM role (may already exist or permissions issue)"
+        fi
+
+        echo ""
+        echo -e "${BLUE}Step 5: Installing system dependencies (gcloud CLI)...${NC}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 # Install gcloud CLI if not already installed
 if ! command -v gcloud &> /dev/null; then
@@ -295,7 +322,7 @@ fi
 ENDSSH
 
         echo ""
-        echo -e "${BLUE}Step 5: Installing Python dependencies on instance...${NC}"
+        echo -e "${BLUE}Step 6: Installing Python dependencies on instance...${NC}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 

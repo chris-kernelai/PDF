@@ -323,7 +323,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "  3c: Monitoring batch progress..."
     MAX_RETRIES=60  # 60 retries = 60 minutes max wait
     RETRY_COUNT=0
-    WAIT_TIME=60  # 60 seconds between checks
+    WAIT_TIME=120  # 60 seconds between checks
 
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         MONITOR_OUTPUT=$(python3 3c_monitor_batches.py 2>&1)
@@ -374,7 +374,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "  4c: Monitoring filter progress..."
     MAX_RETRIES=60  # 60 retries = 60 minutes max wait
     RETRY_COUNT=0
-    WAIT_TIME=60  # 60 seconds between checks
+    WAIT_TIME=120  # 60 seconds between checks
 
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         MONITOR_OUTPUT=$(python3 4c_monitor_filter_batches.py 2>&1)

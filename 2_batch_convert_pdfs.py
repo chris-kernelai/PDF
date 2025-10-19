@@ -33,6 +33,16 @@ load_dotenv()
 # Global flag for graceful shutdown
 _shutdown_requested = False
 
+os.makedirs("data/images", exist_ok=True)
+
+os.makedirs("data/processed", exist_ok=True)
+
+os.makedirs("data/processed_raw", exist_ok=True)
+
+os.makedirs("data/processed_images", exist_ok=True)
+
+os.makedirs("data/processed_images_raw", exist_ok=True)
+
 
 def _signal_handler(signum, frame):
     """Handle interrupt signals gracefully."""
