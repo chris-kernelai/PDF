@@ -65,21 +65,16 @@ async def batch_upload_documents(
                 continue
 
     # Find documents to upload
-    if processed_images_files:
-        # Both types of files exist - find matching pairs
-        matching_doc_ids = set(processed_files.keys()) & set(processed_images_files.keys())
-    else:
-        # Only raw markdown files exist - upload all of them
-        matching_doc_ids = set(processed_files.keys())
+    # Always upload all available docling files, regardless of image files
+    matching_doc_ids = set(processed_files.keys())
 
     print(f"\n📊 File Summary:")
     print(f"   Total docling files: {len(processed_files)}")
     if processed_images_files:
         print(f"   Total docling_img files: {len(processed_images_files)}")
-        print(f"   Matching pairs: {len(matching_doc_ids)}")
     else:
         print(f"   Total docling_img files: 0 (raw markdown only)")
-        print(f"   Documents to upload: {len(matching_doc_ids)}")
+    print(f"   Documents to upload: {len(matching_doc_ids)}")
 
     # Initialize uploader early to check existing uploads
     uploader = DocumentRepresentationUploader()

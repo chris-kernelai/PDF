@@ -454,12 +454,66 @@ class PageCutoffFixer:
         # pdf_path.unlink()  # Commented out for debugging
         
         if not self.dry_run:
-            # TODO: Upload the fixed content back to S3
-            print(f"📤 TODO: Upload fixed content for doc {doc_id}")
+            # Upload the fixed content back to S3 (replace existing)
+            print(f"📤 Uploading fixed content for doc {doc_id}...")
+            try:
+                # Save the fixed content to a temporary file for upload (as .txt)
+                temp_file = UPLOAD_DIR / f"temp_doc_{doc_id}.txt"
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+                
+                # Upload using custom replace method
+                result = await self.replace_docling_representation(
+                    document_id=doc_id,
+                    docling_file=str(temp_file),
+                    page_count=total_pages,
+                    s3_bucket=doc_info["docling"]["bucket"],
+                    s3_key=doc_info["docling"]["s3_key"]
+                )
+                
+                # Clean up temp file
+                temp_file.unlink()
+                
+                print(f"✅ Successfully uploaded fixed content for doc {doc_id}")
+                print(f"📊 Upload result: {result}")
+            except Exception as e:
+                print(f"❌ Failed to upload fixed content for doc {doc_id}: {e}")
+                return False
         else:
             print(f"🔍 DRY RUN: Would upload fixed content for doc {doc_id}")
         
         return True
+    
+    async def replace_docling_representation(self, document_id: int, docling_file: str, page_count: int, s3_bucket: str, s3_key: str) -> dict:
+        """Replace existing DOCLING representation by updating S3 and database."""
+        try:
+            # Upload file to S3
+            print(f"📤 Uploading to S3: {s3_key}")
+            s3_metadata = await self.uploader.upload_file_to_s3(docling_file, s3_key)
+            
+            # Update database record
+            print(f"📝 Updating database record for doc {document_id}")
+            async with self.uploader.db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE librarian.document_locations_v2 
+                    SET s3_key = $1, page_count = $2, updated_at = NOW()
+                    WHERE kdocument_id = $3 AND representation_type = 'DOCLING'
+                    """,
+                    s3_key,
+                    page_count,
+                    document_id
+                )
+            
+            return {
+                'document_id': document_id,
+                's3_metadata': s3_metadata,
+                'status': 'replaced'
+            }
+            
+        except Exception as e:
+            print(f"❌ Failed to replace DOCLING representation: {e}")
+            raise
     
     async def fix_all_documents(self, csv_path: Path, limit: Optional[int] = None, doc_id: Optional[int] = None):
         """Fix all documents in the CSV file."""
