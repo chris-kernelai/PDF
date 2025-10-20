@@ -18,7 +18,7 @@
 #   ./LOCAL_2_aws_helper.sh clean [instance]           # Remove processed files
 #
 # Available instances:
-#   PDF (default): 3.101.112.7 - GPU (Tesla T4) - US West
+#   PDF (default): 204.236.163.8 - GPU (Tesla T4) - US West
 #   PDF-London:    35.178.204.146 - GPU (Tesla T4) - London
 #
 ################################################################################
@@ -28,7 +28,7 @@ get_instance_config() {
     local instance=$1
     case "$instance" in
         PDF)
-            INSTANCE_IP="3.101.112.7"
+            INSTANCE_IP="204.236.163.8"
             INSTANCE_ID="i-09f9f69a561efe64c"
             INSTANCE_REGION="us-west-1"
             PEM_KEY="PDF_key.pem"
@@ -458,7 +458,7 @@ ENDSSH
         echo "  clean [instance]           Remove all processed files on instance"
         echo ""
         echo "Available Instances:"
-        echo "  PDF (default):  3.101.112.7  - GPU (Tesla T4) - US West"
+        echo "  PDF (default):  204.236.163.8  - GPU (Tesla T4) - US West"
         echo "  PDF-London:     35.178.204.146 - GPU (Tesla T4) - London"
         echo ""
         echo "Examples:"
