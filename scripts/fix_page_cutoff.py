@@ -355,7 +355,7 @@ class PageCutoffFixer:
                     if next_page_pos != -1:
                         # Found the next page marker - insert BEFORE it
                         result_content = (result_content[:next_page_pos] + 
-                                       f"\n\n<!-- PAGE {page_num} -->\n\n{extracted_pages[page_num]}" +
+                                       f"\n\n<!-- PAGE {page_num} -->\n\n{extracted_pages[page_num]}\n\n" +
                                        result_content[next_page_pos:])
                         print(f"  ✅ Inserted page {page_num} before page {next_page}")
                     else:
