@@ -1,0 +1,1 @@
+timestamp,doc_id,stage,batch_uuid,pages,images_extracted,images_sent_to_batch,images_downloaded,images_filtered_in,images_filtered_out,images_integrated,duration_seconds,status,notes
