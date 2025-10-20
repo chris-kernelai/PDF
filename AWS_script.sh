@@ -183,20 +183,27 @@ case "$1" in
         # Sync shell scripts
         scp -i "$PEM_KEY" *.sh "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
 
-        # Sync src directory if it exists
+        # Sync src directory Python files only
         if [ -d "src" ]; then
-            scp -i "$PEM_KEY" -r src "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ${REMOTE_DIR}/src"
+            scp -i "$PEM_KEY" src/*.py "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/src/"
         fi
 
-        # Sync scripts directory if it exists
+        # Sync scripts directory Python and shell files only
         if [ -d "scripts" ]; then
-            scp -i "$PEM_KEY" -r scripts "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ${REMOTE_DIR}/scripts"
+            scp -i "$PEM_KEY" scripts/*.py "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/scripts/" 2>/dev/null || true
+            scp -i "$PEM_KEY" scripts/*.sh "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/scripts/" 2>/dev/null || true
         fi
+
+        # Sync config files
+        scp -i "$PEM_KEY" config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/" 2>/dev/null || true
+        scp -i "$PEM_KEY" requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/" 2>/dev/null || true
 
         # Make scripts executable
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod +x *.sh && chmod +x scripts/*.sh 2>/dev/null || true"
 
-        echo -e "${GREEN}✅ Code synced (venv, data, and .generated excluded)${NC}"
+        echo -e "${GREEN}✅ Code synced (Python, shell, and config files only)${NC}"
         ;;
 
     deploy-config)
