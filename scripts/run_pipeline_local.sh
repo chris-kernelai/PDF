@@ -6,22 +6,28 @@
 # runs image description + filter + integration, and does NOT upload.
 #
 # Usage:
-#   ./scripts/run_pipeline_local.sh [--images-only]
+#   ./scripts/run_pipeline_local.sh [--images-only] [--integration-only] [--batch-size <workers>]
 #
 # Notes:
 # - Skips fetching and uploading
 # - Generates a session ID and passes it to 3a/3b/3c/3d and 4a/4b/4c/4d
+# - --integration-only: Only runs the integration step (requires existing filtered outputs)
 ################################################################################
 
 set -e
 
 IMAGES_ONLY=false
+INTEGRATION_ONLY=false
 WORKERS=2
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --images-only|-i)
       IMAGES_ONLY=true
+      shift
+      ;;
+    --integration-only|-int)
+      INTEGRATION_ONLY=true
       shift
       ;;
     --batch-size)
@@ -49,7 +55,28 @@ warn(){ echo -e "${YELLOW}⚠️  $1${NC}"; }
 
 trap 'err "Pipeline failed"; exit 1' ERR
 
+# Ensure we run from repository root (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
 log "Local pipeline start"
+
+# Handle integration-only mode
+if [ "$INTEGRATION_ONLY" = true ]; then
+  log "Integration-only mode: skipping all processing steps"
+  DESC_DIR=".generated/image_description_batches_outputs_filtered"
+  if [ -d "$DESC_DIR" ] && [ "$(find "$DESC_DIR" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
+    log "5: Integrating image descriptions"
+    python3 5_integrate_descriptions.py
+    ok "Integration complete"
+  else
+    err "No filtered description outputs found in $DESC_DIR"
+    exit 1
+  fi
+  log "Integration-only pipeline complete"
+  exit 0
+fi
 
 # Count markdowns that need image processing
 PROCESSED_MDS=$(find data/processed -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
@@ -94,10 +121,10 @@ else
   RETRY=0
   WAIT=60
   while [ $RETRY -lt $MAX_RETRIES ]; do
-    OUT=$(python3 3c_monitor_batches.py --session-id "$PIPELINE_SESSION_ID" 2>&1 || true)
+    OUT=$(python3 3c_monitor_batches.py 2>&1 || true)
     echo "$OUT"
-    echo "$OUT" | grep -q "All batches completed" && break
-    echo "$OUT" | grep -q "Some batches failed" && { err "Some image batches failed"; exit 1; }
+    echo "$OUT" | grep -q "✅ All batch jobs completed successfully" && break
+    echo "$OUT" | grep -q "❌ Some batch jobs failed" && { err "Some image batches failed"; exit 1; }
     RETRY=$((RETRY+1))
     [ $RETRY -lt $MAX_RETRIES ] && { log "Waiting $WAIT seconds... ($RETRY/$MAX_RETRIES)"; sleep $WAIT; }
   done
@@ -124,8 +151,8 @@ else
   while [ $RETRY -lt $MAX_RETRIES ]; do
     OUT=$(python3 4c_monitor_filter_batches.py --session-id "$PIPELINE_SESSION_ID" 2>&1 || true)
     echo "$OUT"
-    echo "$OUT" | grep -q "All batches completed" && break
-    echo "$OUT" | grep -q "Some batches failed" && { err "Some filter batches failed"; exit 1; }
+    echo "$OUT" | grep -q "✅ All batch jobs completed successfully" && break
+    echo "$OUT" | grep -q "❌ Some batch jobs failed" && { err "Some filter batches failed"; exit 1; }
     RETRY=$((RETRY+1))
     [ $RETRY -lt $MAX_RETRIES ] && { log "Waiting $WAIT seconds... ($RETRY/$MAX_RETRIES)"; sleep $WAIT; }
   done
@@ -139,7 +166,7 @@ fi
 
 # 5: Integrate descriptions locally (only if filtered outputs exist)
 DESC_DIR=".generated/image_description_batches_outputs_filtered"
-if [ -d "$DESC_DIR" ] && [ "$(find "$DESC_DIR" -type f -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
+if [ -d "$DESC_DIR" ] && [ "$(find "$DESC_DIR" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
   log "5: Integrating image descriptions"
   python3 5_integrate_descriptions.py
   ok "Integration complete"

@@ -249,8 +249,8 @@ class DoclingConverter:
                 if self.add_page_numbers:
                     result_markdown += f"Page {page_offset + i + 1}\n"
                 result_markdown += document.export_to_markdown(page_no=i)
-                if i < page_count - 1:  # Don't add marker after last page
-                    result_markdown += f"\n\n<!-- PAGE {page_offset + i + 1} -->\n\n"
+                # Add page marker after each page, including the last one
+                result_markdown += f"\n\n<!-- PAGE {page_offset + i + 1} -->\n\n"
 
             return result_markdown, document, page_count
 

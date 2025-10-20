@@ -35,8 +35,11 @@ async def batch_upload_documents(
         return
 
     if not processed_images_path.exists():
-        print(f"❌ Directory not found: {processed_images_dir}")
-        return
+        print(f"⚠️  Directory not found: {processed_images_dir}")
+        print(f"   Will upload only raw markdown files (no image processing)")
+        processed_images_files = {}  # Empty dict for no image files
+    else:
+        processed_images_files = {}
 
     # Get all markdown files and extract document IDs
     processed_files = {}
@@ -50,24 +53,33 @@ async def batch_upload_documents(
             print(f"⚠️  Skipping invalid filename: {file.name}")
             continue
 
-    # Get all processed_images files
-    processed_images_files = {}
-    for file in processed_images_path.glob("doc_*.md"):
-        doc_id_str = file.stem.replace("doc_", "")
-        try:
-            doc_id = int(doc_id_str)
-            processed_images_files[doc_id] = file
-        except ValueError:
-            print(f"⚠️  Skipping invalid filename: {file.name}")
-            continue
+    # Get all processed_images files (if directory exists)
+    if processed_images_path.exists():
+        for file in processed_images_path.glob("doc_*.md"):
+            doc_id_str = file.stem.replace("doc_", "")
+            try:
+                doc_id = int(doc_id_str)
+                processed_images_files[doc_id] = file
+            except ValueError:
+                print(f"⚠️  Skipping invalid filename: {file.name}")
+                continue
 
-    # Find matching pairs (documents that have both files)
-    matching_doc_ids = set(processed_files.keys()) & set(processed_images_files.keys())
+    # Find documents to upload
+    if processed_images_files:
+        # Both types of files exist - find matching pairs
+        matching_doc_ids = set(processed_files.keys()) & set(processed_images_files.keys())
+    else:
+        # Only raw markdown files exist - upload all of them
+        matching_doc_ids = set(processed_files.keys())
 
     print(f"\n📊 File Summary:")
     print(f"   Total docling files: {len(processed_files)}")
-    print(f"   Total docling_img files: {len(processed_images_files)}")
-    print(f"   Matching pairs: {len(matching_doc_ids)}")
+    if processed_images_files:
+        print(f"   Total docling_img files: {len(processed_images_files)}")
+        print(f"   Matching pairs: {len(matching_doc_ids)}")
+    else:
+        print(f"   Total docling_img files: 0 (raw markdown only)")
+        print(f"   Documents to upload: {len(matching_doc_ids)}")
 
     # Initialize uploader early to check existing uploads
     uploader = DocumentRepresentationUploader()
@@ -116,7 +128,10 @@ async def batch_upload_documents(
                     status = " (partial - will complete)"
                 print(f"   Would upload doc_{doc_id}{status}:")
                 print(f"      docling: {processed_files[doc_id]}")
-                print(f"      docling_img: {processed_images_files[doc_id]}")
+                if processed_images_files.get(doc_id):
+                    print(f"      docling_img: {processed_images_files[doc_id]}")
+                else:
+                    print(f"      docling_img: (raw markdown only)")
             if len(docs_to_upload) > 10:
                 print(f"   ... and {len(docs_to_upload) - 10} more")
             await uploader.close()
@@ -136,7 +151,7 @@ async def batch_upload_documents(
 
         for i, doc_id in enumerate(sorted(docs_to_upload), 1):
             docling_file = processed_files[doc_id]
-            docling_img_file = processed_images_files[doc_id]
+            docling_img_file = processed_images_files.get(doc_id)  # May be None
 
             status_str = ""
             if doc_id in docs_partial:
@@ -150,7 +165,7 @@ async def batch_upload_documents(
 
                 # Skip individual files if they already exist
                 upload_docling = "DOCLING" not in existing
-                upload_docling_img = "DOCLING_IMG" not in existing
+                upload_docling_img = docling_img_file and "DOCLING_IMG" not in existing
 
                 if not upload_docling and not upload_docling_img:
                     # Shouldn't happen due to filtering, but just in case
@@ -164,7 +179,7 @@ async def batch_upload_documents(
                     docling_file=str(docling_file) if upload_docling else None,
                     docling_img_file=str(docling_img_file) if upload_docling_img else None,
                     docling_filename=f"doc_{doc_id}.txt",
-                    docling_img_filename=f"doc_{doc_id}.txt",
+                    docling_img_filename=f"doc_{doc_id}.txt" if docling_img_file else None,
                 )
 
                 if results["errors"]:

@@ -6,7 +6,7 @@
 # This script runs the entire PDF processing pipeline in batches of 500 documents
 # to avoid GPU memory overflow. It processes documents within a specified ID range.
 #
-# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--batch-size <workers>] [--background] [--skip-download] [--cpu] [--images-only]
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--batch-size <workers>] [--background] [--skip-download] [--cpu] [--images-only] [--no-images]
 #
 # Examples:
 #   ./run_pipeline.sh 27000 30000 500                    # Run interactively
@@ -15,6 +15,7 @@
 #   ./run_pipeline.sh 27000 30000 500 --skip-download    # Skip document fetching step
 #   ./run_pipeline.sh 27000 30000 500 --cpu --batch-size 8  # CPU mode with 8 workers
 #   ./run_pipeline.sh 27000 30000 500 --images-only      # Only run image processing (skip PDF conversion)
+#   ./run_pipeline.sh 27000 30000 500 --no-images        # Skip image processing, upload raw markdown
 ################################################################################
 
 # Parse flags
@@ -22,6 +23,7 @@ BACKGROUND_MODE=false
 SKIP_DOWNLOAD=false
 CPU_MODE=false
 IMAGES_ONLY=false
+NO_IMAGES=false
 WORKERS=2  # Default to 2 workers
 ARGS=()
 
@@ -40,6 +42,9 @@ while [ $i -le $# ]; do
             ;;
         --images-only|-i)
             IMAGES_ONLY=true
+            ;;
+        --no-images|-n)
+            NO_IMAGES=true
             ;;
         --batch-size)
             ((i++))
@@ -67,6 +72,7 @@ if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
     [ "$SKIP_DOWNLOAD" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --skip-download"
     [ "$CPU_MODE" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --cpu"
     [ "$IMAGES_ONLY" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --images-only"
+    [ "$NO_IMAGES" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --no-images"
     [ "$WORKERS" != "2" ] && EXTRA_FLAGS="$EXTRA_FLAGS --batch-size $WORKERS"
     PIPELINE_CHILD=1 nohup "$0" "$@" $EXTRA_FLAGS > "$LOG_FILE" 2>&1 &
     PID=$!
@@ -184,6 +190,7 @@ info "Parallel workers: $WORKERS"
 info "Mode: $([ "$CPU_MODE" = true ] && echo "CPU" || echo "GPU")"
 info "Skip download: $SKIP_DOWNLOAD"
 info "Images only: $IMAGES_ONLY"
+info "No images: $NO_IMAGES"
 info "Working directory: $(pwd)"
 log "=========================================="
 echo ""
@@ -315,8 +322,12 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
         echo ""
     fi
 
-    # Step 3: Image Description Pipeline
-    log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
+    # Step 3: Image Description Pipeline (skip if --no-images flag is set)
+    if [ "$NO_IMAGES" = true ]; then
+        log "STEP 3: Skipping image description pipeline (--no-images flag set)"
+        echo ""
+    else
+        log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
 
     # Generate unique session ID for this pipeline run
     PIPELINE_SESSION_ID=$(python3 -c "import uuid; print(str(uuid.uuid4())[:8])")
@@ -373,11 +384,16 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "  3d: Downloading batch results..."
     python3 3d_download_batch_results.py --session-id "$PIPELINE_SESSION_ID"
 
-    log "✓ Image description pipeline complete for batch $BATCH_NUM"
-    echo ""
+        log "✓ Image description pipeline complete for batch $BATCH_NUM"
+        echo ""
+    fi
 
-    # Step 4: Filter Pipeline
-    log "STEP 4: Running filter pipeline (batch $BATCH_NUM)"
+    # Step 4: Filter Pipeline (skip if --no-images flag is set)
+    if [ "$NO_IMAGES" = true ]; then
+        log "STEP 4: Skipping filter pipeline (--no-images flag set)"
+        echo ""
+    else
+        log "STEP 4: Running filter pipeline (batch $BATCH_NUM)"
 
     # 4a: Prepare filter batches
     log "  4a: Preparing filter batches..."
@@ -424,11 +440,16 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     log "  4d: Downloading filter results..."
     python3 4d_download_filter_results.py --session-id "$PIPELINE_SESSION_ID"
 
-    log "✓ Filter pipeline complete for batch $BATCH_NUM"
-    echo ""
+        log "✓ Filter pipeline complete for batch $BATCH_NUM"
+        echo ""
+    fi
 
-    # Step 5: Integrate descriptions
-    log "STEP 5: Integrating image descriptions (batch $BATCH_NUM)"
+    # Step 5: Integrate descriptions (skip if --no-images flag is set)
+    if [ "$NO_IMAGES" = true ]; then
+        log "STEP 5: Skipping description integration (--no-images flag set)"
+        echo ""
+    else
+        log "STEP 5: Integrating image descriptions (batch $BATCH_NUM)"
     python3 5_integrate_descriptions.py
 
     if [ $? -ne 0 ]; then
@@ -436,8 +457,9 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
         exit 1
     fi
 
-    log "✓ Description integration complete for batch $BATCH_NUM"
-    echo ""
+        log "✓ Description integration complete for batch $BATCH_NUM"
+        echo ""
+    fi
 
     # Log session completion
     SESSION_END_TIME=$(date '+%Y-%m-%d %H:%M:%S')

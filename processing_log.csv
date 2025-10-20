@@ -1,1 +1,12 @@
 timestamp,doc_id,stage,batch_uuid,pages,images_extracted,images_sent_to_batch,images_downloaded,images_filtered_in,images_filtered_out,images_integrated,duration_seconds,status,notes
+2025-10-20T14:36:31.057554,doc_1,conversion,,34,,,,,,,86.44,success,
+2025-10-20T14:38:34.764941,doc_2,conversion,,62,,,,,,,123.14,success,
+2025-10-20T14:39:08.991208,doc_3,conversion,,11,,,,,,,34.18,success,
+2025-10-20T15:05:31.044231,page,download,2,,,,168,,,,3.87,success,
+2025-10-20T15:05:32.616053,page,download,1,,,,84,,,,1.57,success,
+2025-10-20T15:12:54.638879,2,integration,2,,,,,,,51,0.00,success,
+2025-10-20T15:12:54.639003,1,integration,1,,,,,,,34,0.00,success,
+2025-10-20T15:42:44.517844,doc1,conversion,,34,,,,,,,104.65,success,
+2025-10-20T15:45:26.227393,doc2,conversion,,62,,,,,,,161.03,success,
+2025-10-20T15:46:10.276202,doc3,conversion,,11,,,,,,,43.98,success,
+2025-10-20T15:52:40.278342,doc2,conversion,,62,,,,,,,133.28,success,
