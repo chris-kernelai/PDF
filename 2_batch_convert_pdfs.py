@@ -278,6 +278,10 @@ def _process_single_pdf_worker(
                             for page_idx in range(start, end):
                                 writer.add_page(reader.pages[page_idx])
 
+                            # Add a blank page at the end to prevent last page cutoff
+                            # This blank page will be excluded during processing
+                            writer.add_blank_page(width=612, height=792)  # Standard US Letter size
+
                             chunk_file = chunk_temp_dir / f"{pdf_file.stem}_part_{len(chunk_paths) + 1}.pdf"
                             with open(chunk_file, "wb") as chunk_fp:
                                 writer.write(chunk_fp)
@@ -314,6 +318,7 @@ def _process_single_pdf_worker(
                         markdown, document, page_count = converter.convert_pdf(
                             chunk_path,
                             page_offset=page_offset,
+                            strip_last_page_from_output=chunked,  # Strip blank buffer page AFTER processing
                         )
                         chunk_processing_time = time.time() - start_time
 

@@ -10,3 +10,4 @@ timestamp,doc_id,stage,batch_uuid,pages,images_extracted,images_sent_to_batch,im
 2025-10-20T15:45:26.227393,doc2,conversion,,62,,,,,,,161.03,success,
 2025-10-20T15:46:10.276202,doc3,conversion,,11,,,,,,,43.98,success,
 2025-10-20T15:52:40.278342,doc2,conversion,,62,,,,,,,133.28,success,
+2025-10-21T00:20:31.973975,doc2,conversion,,62,,,,,,,128.55,success,

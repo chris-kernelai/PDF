@@ -192,15 +192,18 @@ class DoclingConverter:
         pdf_source: Union[str, Path],
         *,
         page_offset: int = 0,
+        strip_last_page_from_output: bool = False,
     ) -> Tuple[str, DoclingDocument, int]:
         """
         Convert a PDF file to Markdown.
 
         Args:
             pdf_source: Path to the PDF file to convert.
+            page_offset: Starting page number for page markers (default: 0).
+            strip_last_page_from_output: If True, process all pages but remove the last page from markdown output (useful for blank buffer pages).
 
         Returns:
-            Tuple containing the markdown content, the DoclingDocument object, and page count.
+            Tuple containing the markdown content, the DoclingDocument object, and page count (excluding stripped pages).
 
         Raises:
             FileNotFoundError: If the PDF file doesn't exist.
@@ -241,16 +244,58 @@ class DoclingConverter:
             document = doc.document
 
             pages = list(document.pages)
-            page_count = len(pages)
+            total_pages = len(pages)
 
+            # Process ALL pages (including blank buffer page if present)
             # Always add page markers
             result_markdown = ""
-            for i in range(page_count):
+            for i in range(total_pages):
                 if self.add_page_numbers:
                     result_markdown += f"Page {page_offset + i + 1}\n"
-                result_markdown += document.export_to_markdown(page_no=i)
-                # Add page marker after each page, including the last one
+                
+                # Get markdown from Docling
+                page_markdown = document.export_to_markdown(page_no=i)
+                
+                # Fallback: if Docling returns empty content, try pypdf
+                if not page_markdown.strip():
+                    try:
+                        from pypdf import PdfReader
+                        reader = PdfReader(str(pdf_path))
+                        # Use the chunk PDF's page index (i), not the original page index
+                        if i < len(reader.pages):
+                            text = reader.pages[i].extract_text()
+                            if text.strip():
+                                page_markdown = f"\n{text}\n"
+                    except Exception as e:
+                        # Log the error for debugging
+                        import logging
+                        logging.warning(f"pypdf fallback failed for page {page_offset + i + 1}: {e}")
+                
+                result_markdown += page_markdown
+                # Add page marker after each page
                 result_markdown += f"\n\n<!-- PAGE {page_offset + i + 1} -->\n\n"
+
+            # If strip_last_page_from_output is True, remove the last page from markdown
+            # This happens AFTER Docling processes everything (so real content isn't cut off)
+            if strip_last_page_from_output and total_pages > 0:
+                # Find and remove the last page's content and marker
+                last_page_num = page_offset + total_pages
+                last_page_marker = f"<!-- PAGE {last_page_num} -->"
+                
+                # Find the second-to-last page marker to know where to cut
+                if total_pages > 1:
+                    second_last_marker = f"<!-- PAGE {last_page_num - 1} -->"
+                    marker_pos = result_markdown.rfind(second_last_marker)
+                    if marker_pos != -1:
+                        # Find the end of the second-to-last marker
+                        marker_end = result_markdown.find("\n\n", marker_pos + len(second_last_marker))
+                        if marker_end != -1:
+                            # Cut everything after the second-to-last page marker
+                            result_markdown = result_markdown[:marker_end + 2]
+                
+                page_count = total_pages - 1
+            else:
+                page_count = total_pages
 
             return result_markdown, document, page_count
 
