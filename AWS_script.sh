@@ -188,8 +188,13 @@ case "$1" in
             scp -i "$PEM_KEY" -r src "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
         fi
 
+        # Sync scripts directory if it exists
+        if [ -d "scripts" ]; then
+            scp -i "$PEM_KEY" -r scripts "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        fi
+
         # Make scripts executable
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod +x *.sh"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod +x *.sh && chmod +x scripts/*.sh 2>/dev/null || true"
 
         echo -e "${GREEN}✅ Code synced (venv, data, and .generated excluded)${NC}"
         ;;
