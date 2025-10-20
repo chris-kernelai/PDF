@@ -209,26 +209,22 @@ class PageCutoffFixer:
             return None
     
     def find_missing_pages(self, markdown_content: str, total_pages: int) -> Set[int]:
-        """Find missing page numbers that are multiples of 30 or the last page."""
+        """Find ALL missing page numbers by comparing against expected pages 1 to total_pages."""
         # Find all page markers in the content
         page_markers = re.findall(r'<!-- PAGE (\d+) -->', markdown_content)
         existing_pages = {int(page) for page in page_markers}
         
-        # Find missing pages that are multiples of 30 or the last page
-        missing_pages = set()
+        print(f"🔍 Found existing pages: {sorted(existing_pages)}")
         
-        # Check multiples of 30
-        for page_num in range(30, total_pages + 1, 30):
-            if page_num not in existing_pages:
-                missing_pages.add(page_num)
+        if not existing_pages:
+            print("❌ No page markers found in document")
+            return set()
         
-        # Check last page
-        if total_pages not in existing_pages:
-            missing_pages.add(total_pages)
+        # Find ALL missing pages by comparing against expected range
+        expected_pages = set(range(1, total_pages + 1))
+        missing_pages = expected_pages - existing_pages
         
-        # Always extract the last page for debugging
-        missing_pages.add(total_pages)
-        
+        print(f"🔍 Missing pages: {sorted(missing_pages)}")
         return missing_pages
     
     def extract_page_content_from_pdf(self, pdf_path: Path, page_num: int, converter: DoclingConverter) -> str:
@@ -389,7 +385,7 @@ class PageCutoffFixer:
         with open(markdown_path, "r", encoding="utf-8") as f:
             markdown_content = f.read()
         
-        # Get total page count - if not in CSV, analyze the content
+        # Get initial page count from CSV or content analysis
         page_count_str = doc_info["docling"]["page_count"]
         if page_count_str and page_count_str != "0":
             total_pages = int(page_count_str)
@@ -407,15 +403,7 @@ class PageCutoffFixer:
             print(f"⚠️  Invalid page count for doc {doc_id}, skipping")
             return False
         
-        # Find missing pages
-        missing_pages = self.find_missing_pages(markdown_content, total_pages)
-        if not missing_pages:
-            print(f"✅ Doc {doc_id} has all pages, no fix needed")
-            return True
-        
-        print(f"🔧 Found missing pages: {sorted(missing_pages)}")
-        
-        # Download the original PDF to extract missing pages
+        # Download the original PDF first to get accurate page count
         print(f"📥 Downloading original PDF for doc {doc_id}...")
         async with aiohttp.ClientSession() as session:
             url_map = await self._get_download_urls_batch(session, [doc_id])
@@ -429,6 +417,25 @@ class PageCutoffFixer:
             if not pdf_path:
                 print(f"❌ Could not download PDF for doc {doc_id}")
                 return False
+            
+            # Get the actual page count from the PDF
+            try:
+                from pypdf import PdfReader
+                pdf_reader = PdfReader(pdf_path)
+                actual_page_count = len(pdf_reader.pages)
+                print(f"📊 PDF has {actual_page_count} pages")
+                total_pages = actual_page_count
+            except Exception as e:
+                print(f"❌ Failed to read PDF page count: {e}")
+                # Keep the original total_pages from CSV/content analysis
+        
+        # Find missing pages with correct total page count
+        missing_pages = self.find_missing_pages(markdown_content, total_pages)
+        if not missing_pages:
+            print(f"✅ Doc {doc_id} has all pages, no fix needed")
+            return True
+        
+        print(f"🔧 Found missing pages: {sorted(missing_pages)}")
         
         # Extract missing pages from PDF and insert them
         print(f"🔧 Extracting and inserting missing pages...")
