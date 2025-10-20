@@ -275,25 +275,41 @@ class DoclingConverter:
                 # Add page marker after each page
                 result_markdown += f"\n\n<!-- PAGE {page_offset + i + 1} -->\n\n"
 
-            # If strip_last_page_from_output is True, remove the last page from markdown
+            # If strip_last_page_from_output is True, check if the last page is blank and remove it if so
             # This happens AFTER Docling processes everything (so real content isn't cut off)
-            if strip_last_page_from_output and total_pages > 0:
-                # Find and remove the last page's content and marker
+            if strip_last_page_from_output and total_pages > 1:
+                # Find the last page and check if it has content
                 last_page_num = page_offset + total_pages
-                last_page_marker = f"<!-- PAGE {last_page_num} -->"
+                second_last_page_num = last_page_num - 1
                 
-                # Find the second-to-last page marker to know where to cut
-                if total_pages > 1:
-                    second_last_marker = f"<!-- PAGE {last_page_num - 1} -->"
-                    marker_pos = result_markdown.rfind(second_last_marker)
-                    if marker_pos != -1:
-                        # Find the end of the second-to-last marker
-                        marker_end = result_markdown.find("\n\n", marker_pos + len(second_last_marker))
-                        if marker_end != -1:
-                            # Cut everything after the second-to-last page marker
+                # Find the second-to-last page marker
+                second_last_marker = f"<!-- PAGE {second_last_page_num} -->"
+                marker_pos = result_markdown.rfind(second_last_marker)
+                
+                if marker_pos != -1:
+                    # Find the end of the second-to-last marker (after the "\n\n")
+                    marker_end = result_markdown.find("\n\n", marker_pos + len(second_last_marker))
+                    if marker_end != -1:
+                        # Get the content after the second-to-last marker (this is the last page content)
+                        content_after_marker = result_markdown[marker_end + 2:]
+                        
+                        # Check if there's any meaningful content (ignoring whitespace, page markers, and "Page X" headers)
+                        # Remove page markers and "Page X" text for the check
+                        import re
+                        content_to_check = re.sub(r'Page \d+\s*', '', content_after_marker)
+                        content_to_check = re.sub(r'<!--.*?-->', '', content_to_check)
+                        
+                        # If there's no meaningful content, strip the last page
+                        if not content_to_check.strip():
                             result_markdown = result_markdown[:marker_end + 2]
-                
-                page_count = total_pages - 1
+                            page_count = total_pages - 1
+                        else:
+                            # Last page has content, keep it
+                            page_count = total_pages
+                    else:
+                        page_count = total_pages
+                else:
+                    page_count = total_pages
             else:
                 page_count = total_pages
 
