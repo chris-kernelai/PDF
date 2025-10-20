@@ -46,20 +46,34 @@ class PageCutoffFixer:
     """Fixes page cutoff issues in DOCLING representations."""
     
     def __init__(self, aws_profile: Optional[str] = None, dry_run: bool = False):
-        self.aws_profile = aws_profile or os.getenv("AWS_PROFILE", "production")
+        # Use IAM role if no explicit credentials, otherwise use profile
+        if os.getenv("AWS_ACCESS_KEY_ID"):
+            self.aws_profile = None  # Use IAM role or explicit credentials
+        elif aws_profile:
+            self.aws_profile = aws_profile
+        elif os.getenv("AWS_PROFILE"):
+            self.aws_profile = os.getenv("AWS_PROFILE")
+        else:
+            self.aws_profile = None  # Use IAM role by default
         self.dry_run = dry_run
         self.s3_client = None
         self.uploader = None
         self.api_key = os.getenv("API_KEY")
         self.base_url = os.getenv("API_BASE_URL", "https://librarian.production.primerapp.com/api/v1")
+        self.aws_region = os.getenv("AWS_REGION", "eu-west-2")
         
     async def initialize(self):
         """Initialize AWS and database connections."""
         try:
             # Initialize S3 client
-            session = boto3.Session(profile_name=self.aws_profile)
-            self.s3_client = session.client("s3")
-            print(f"✅ S3 client ready (profile={self.aws_profile})")
+            if self.aws_profile:
+                session = boto3.Session(profile_name=self.aws_profile)
+                self.s3_client = session.client("s3", region_name=self.aws_region)
+                print(f"✅ S3 client ready (profile={self.aws_profile})")
+            else:
+                # Use IAM role or default credential chain
+                self.s3_client = boto3.client("s3", region_name=self.aws_region)
+                print("✅ S3 client ready (IAM role)")
             
             # Only initialize uploader if not in dry run mode
             if not self.dry_run:
@@ -70,7 +84,10 @@ class PageCutoffFixer:
                 print("✅ Initialized S3 client (dry run mode - no database connection needed)")
             
         except NoCredentialsError:
-            print("❌ AWS credentials not found. If using SSO, run: aws sso login --profile production")
+            if self.aws_profile:
+                print(f"❌ AWS credentials not found for profile '{self.aws_profile}'. If using SSO, run: aws sso login --profile {self.aws_profile}")
+            else:
+                print("❌ AWS credentials not found. Check IAM role or run: aws configure")
             raise
         except Exception as e:
             print(f"❌ Failed to initialize: {e}")
