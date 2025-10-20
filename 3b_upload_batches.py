@@ -33,8 +33,8 @@ from google.genai.types import CreateBatchJobConfig
 # -------------------------------------------------------------------
 load_dotenv()
 
-# Generate unique session ID for this upload run
-SESSION_ID = str(uuid.uuid4())[:8]  # Short UUID for readability
+# Session ID will be set from command line argument or generated if not provided
+SESSION_ID = None
 
 
 # -------------------------------------------------------------------
@@ -216,7 +216,17 @@ def main():
         default="image_description_batches",
         help="Batch folder prefix (default: image_description_batches)",
     )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID for this upload run",
+    )
     args = parser.parse_args()
+
+    # Set session ID from argument (now required)
+    global SESSION_ID
+    SESSION_ID = args.session_id
 
     print("🚀 Gemini Batch Uploader")
     print("=" * 40)
@@ -240,13 +250,15 @@ def main():
         print(f"❌ Batch folder not found: {batch_folder}")
         return False
 
-    # Look for image description batch files
-    batch_files = glob.glob(f"{batch_folder}/image_description_batch_*_imgs_*.jsonl")
+    # Session ID is already set from command line argument
+
+    # Look for image description batch files (with session ID format)
+    batch_files = glob.glob(f"{batch_folder}/image_description_batch_*_imgs_*_*.jsonl")
 
     if not batch_files:
         print(f"❌ No batch files found in {batch_folder}")
         print("   Looking for pattern:")
-        print(f"   - {batch_folder}/image_description_batch_*_imgs_*.jsonl")
+        print(f"   - {batch_folder}/image_description_batch_*_imgs_*_*.jsonl")
         return False
 
     print(f"📄 Found {len(batch_files)} batch files")

@@ -26,8 +26,8 @@ from google.genai.types import CreateBatchJobConfig
 # Load environment
 load_dotenv()
 
-# Generate unique session ID for this upload run
-SESSION_ID = str(uuid.uuid4())[:8]  # Short UUID for readability
+# Session ID will be set from command line argument
+SESSION_ID = None
 
 
 def validate_environment(mode: str) -> None:
@@ -170,7 +170,17 @@ def main():
         default="filter_batches",
         help="Batch folder prefix (default: filter_batches)",
     )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID for this filter upload run",
+    )
     args = parser.parse_args()
+
+    # Set session ID from argument (now required)
+    global SESSION_ID
+    SESSION_ID = args.session_id
 
     print("🚀 Filter Batch Uploader")
     print("=" * 40)

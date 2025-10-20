@@ -415,6 +415,12 @@ def main():
         choices=["developer", "vertex"],
         help="API mode: 'vertex' (default) for Vertex AI or 'developer' for Gemini Developer API",
     )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID to filter results",
+    )
     args = parser.parse_args()
 
     print("🚀 Gemini Batch Downloader")
@@ -438,7 +444,15 @@ def main():
         jobs = tracking_data["jobs"]
         session_id = tracking_data.get("session_id")
         session_start = tracking_data.get("session_start")
-        print(f"🔑 Session ID: {session_id}")
+        
+        # Validate session ID (now required)
+        if session_id != args.session_id:
+            print(f"❌ Session ID mismatch!")
+            print(f"   Expected: {args.session_id}")
+            print(f"   Found: {session_id}")
+            return 1
+        print(f"🔑 Session ID: {session_id} (matched)")
+            
         print(f"📅 Session started: {session_start}")
         print(f"📊 Jobs in this session: {len(jobs)}")
     else:

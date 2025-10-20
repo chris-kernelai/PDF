@@ -121,6 +121,13 @@ command_exists() {
 # Function to cleanup on error
 cleanup_on_error() {
     error "Pipeline failed. Cleaning up..."
+    
+    # Log session failure if we have a session ID
+    if [ -n "${PIPELINE_SESSION_ID:-}" ]; then
+        SESSION_ERROR_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "$SESSION_ERROR_TIME | Session: $PIPELINE_SESSION_ID | Batch: ${BATCH_NUM:-?} | Doc Range: $MIN_DOC_ID-$MAX_DOC_ID | Status: FAILED" >> "${SESSION_LOG_FILE:-pipeline_sessions.log}"
+    fi
+    
     # Don't delete PDFs on error - we may want to retry
     exit 1
 }
@@ -311,13 +318,23 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     # Step 3: Image Description Pipeline
     log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
 
+    # Generate unique session ID for this pipeline run
+    PIPELINE_SESSION_ID=$(python3 -c "import uuid; print(str(uuid.uuid4())[:8])")
+    log "  🔑 Pipeline Session ID: $PIPELINE_SESSION_ID"
+    
+    # Log session info to file
+    SESSION_LOG_FILE="pipeline_sessions.log"
+    SESSION_START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$SESSION_START_TIME | Session: $PIPELINE_SESSION_ID | Batch: $BATCH_NUM | Doc Range: $MIN_DOC_ID-$MAX_DOC_ID | Status: STARTED" >> "$SESSION_LOG_FILE"
+    log "  📝 Session logged to: $SESSION_LOG_FILE"
+
     # 3a: Prepare image batches
     log "  3a: Preparing image batches..."
-    python3 3a_prepare_image_batches.py
+    python3 3a_prepare_image_batches.py --session-id "$PIPELINE_SESSION_ID"
 
     # 3b: Upload batches to Gemini
     log "  3b: Uploading batches to Gemini..."
-    python3 3b_upload_batches.py
+    python3 3b_upload_batches.py --session-id "$PIPELINE_SESSION_ID"
 
     # 3c: Monitor batch progress (with retry)
     log "  3c: Monitoring batch progress..."
@@ -354,7 +371,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
 
     # 3d: Download results
     log "  3d: Downloading batch results..."
-    python3 3d_download_batch_results.py
+    python3 3d_download_batch_results.py --session-id "$PIPELINE_SESSION_ID"
 
     log "✓ Image description pipeline complete for batch $BATCH_NUM"
     echo ""
@@ -364,11 +381,11 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
 
     # 4a: Prepare filter batches
     log "  4a: Preparing filter batches..."
-    python3 4a_prepare_filter_batches.py
+    python3 4a_prepare_filter_batches.py --session-id "$PIPELINE_SESSION_ID"
 
     # 4b: Upload filter batches
     log "  4b: Uploading filter batches..."
-    python3 4b_upload_filter_batches.py
+    python3 4b_upload_filter_batches.py --session-id "$PIPELINE_SESSION_ID"
 
     # 4c: Monitor filter progress (with retry)
     log "  4c: Monitoring filter progress..."
@@ -377,7 +394,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
     WAIT_TIME=60  # 60 seconds between checks
 
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        MONITOR_OUTPUT=$(python3 4c_monitor_filter_batches.py 2>&1)
+        MONITOR_OUTPUT=$(python3 4c_monitor_filter_batches.py --session-id "$PIPELINE_SESSION_ID" 2>&1)
         echo "$MONITOR_OUTPUT"
 
         # Check if all jobs completed successfully
@@ -405,7 +422,7 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
 
     # 4d: Download filter results
     log "  4d: Downloading filter results..."
-    python3 4d_download_filter_results.py
+    python3 4d_download_filter_results.py --session-id "$PIPELINE_SESSION_ID"
 
     log "✓ Filter pipeline complete for batch $BATCH_NUM"
     echo ""
@@ -421,6 +438,10 @@ while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED
 
     log "✓ Description integration complete for batch $BATCH_NUM"
     echo ""
+
+    # Log session completion
+    SESSION_END_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$SESSION_END_TIME | Session: $PIPELINE_SESSION_ID | Batch: $BATCH_NUM | Doc Range: $MIN_DOC_ID-$MAX_DOC_ID | Status: COMPLETED" >> "$SESSION_LOG_FILE"
 
     # Step 6: Upload to S3 and Supabase
     log "STEP 6: Uploading to S3 and Supabase (batch $BATCH_NUM)"

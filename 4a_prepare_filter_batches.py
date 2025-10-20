@@ -95,7 +95,8 @@ def prepare_filter_batches(
     input_dir: Path,
     output_dir: Path,
     batch_size: int = 1000,
-    descriptions_per_request: int = 20
+    descriptions_per_request: int = 20,
+    session_id: str = None
 ) -> bool:
     """
     Prepare JSONL batch files for filtering.
@@ -129,12 +130,10 @@ def prepare_filter_batches(
 
     logger.info(f"\n📊 Total descriptions to filter: {len(all_descriptions)}")
 
-    # Generate unique batch UUID for this run
-    batch_run_uuid = str(uuid.uuid4())[:8]
-    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Use provided session ID for this run
+    batch_run_uuid = session_id if session_id else str(uuid.uuid4())[:8]
 
-    logger.info(f"📋 Batch Run UUID: {batch_run_uuid}")
-    logger.info(f"📋 Timestamp: {run_timestamp}")
+    logger.info(f"📋 Session ID: {batch_run_uuid}")
 
     # Group descriptions into chunks (20 per request)
     requests = []
@@ -182,7 +181,6 @@ def prepare_filter_batches(
         # We'll save this in a separate metadata file
         metadata = {
             "filter_batch_uuid": batch_run_uuid,
-            "filter_timestamp": run_timestamp,
             "chunk_start_index": i,
             "chunk_size": len(chunk),
             "descriptions": [
@@ -229,7 +227,6 @@ def prepare_filter_batches(
     batch_info = {
         "created_at": datetime.now().isoformat(),
         "batch_run_uuid": batch_run_uuid,
-        "run_timestamp": run_timestamp,
         "total_descriptions": len(all_descriptions),
         "descriptions_per_request": descriptions_per_request,
         "total_requests": len(requests),
@@ -293,6 +290,12 @@ def main():
         default=20,
         help="Number of descriptions to evaluate per API request (default: 20)"
     )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID for this filter batch run",
+    )
 
     args = parser.parse_args()
 
@@ -300,7 +303,8 @@ def main():
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         batch_size=args.batch_size,
-        descriptions_per_request=args.descriptions_per_request
+        descriptions_per_request=args.descriptions_per_request,
+        session_id=args.session_id
     )
 
     return 0 if success else 1

@@ -123,6 +123,12 @@ def main():
         default="filter_batches",
         help="Batch folder prefix (default: filter_batches)",
     )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID to filter monitoring results",
+    )
     args = parser.parse_args()
 
     tracking_file = f".generated/{args.batch_prefix}/filter_jobs_tracking.json"
@@ -144,7 +150,14 @@ def main():
         jobs = tracking_data["jobs"]
         session_id = tracking_data.get("session_id")
         session_start = tracking_data.get("session_start")
-        print(f"🔑 Session ID: {session_id}")
+        
+        # Validate session ID (now required)
+        if session_id != args.session_id:
+            print(f"❌ Session ID mismatch!")
+            print(f"   Expected: {args.session_id}")
+            print(f"   Found: {session_id}")
+            return 1
+        print(f"🔑 Session ID: {session_id} (matched)")
         print(f"📅 Session started: {session_start}")
     else:
         print("❌ Invalid tracking file format")

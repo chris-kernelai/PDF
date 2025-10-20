@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import List, Dict, Optional
 import logging
@@ -33,6 +34,9 @@ from PIL import Image
 
 # Load environment
 load_dotenv()
+
+# Session ID will be set from command line argument or generated if not provided
+SESSION_ID = None
 
 
 # -------------------------------------------------------------------
@@ -405,8 +409,8 @@ def process_extracted_images(
         # Count unique documents in this batch
         unique_docs = len(set(req.get('key', req.get('custom_id', '')).split('_')[0] for req in batch_chunk))
 
-        # Create batch file
-        batch_filename = f"image_description_batch_{batch_num:03d}_imgs_{len(batch_chunk):04d}.jsonl"
+        # Create batch file with session ID for uniqueness
+        batch_filename = f"image_description_batch_{batch_num:03d}_imgs_{len(batch_chunk):04d}_{SESSION_ID}.jsonl"
         batch_path = batches_dir / batch_filename
 
         write_batch_file(batch_chunk, batch_path, batch_num, unique_docs)
@@ -415,6 +419,7 @@ def process_extracted_images(
     # Save metadata
     metadata = {
         "created_at": datetime.now().isoformat(),
+        "session_id": SESSION_ID,
         "mode": mode,
         "source": "pre_extracted_images",
         "images_folder": str(images_folder),
@@ -435,6 +440,7 @@ def process_extracted_images(
     print("\n" + "=" * 60)
     print("✅ BATCH PREPARATION COMPLETE")
     print("=" * 60)
+    print(f"🔑 Session ID: {SESSION_ID}")
     print(f"📁 Documents processed: {len(doc_folders)}")
     print(f"🖼️  Images processed: {len(all_image_data)}")
     print(f"📦 Batch files created: {len(batch_files_created)}")
@@ -481,6 +487,12 @@ def main():
         help="Number of images per batch file (default: 100)",
     )
     parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID for this batch run",
+    )
+    parser.add_argument(
         "--system-instruction",
         type=str,
         default=None,
@@ -488,6 +500,10 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Set session ID from argument (now required)
+    global SESSION_ID
+    SESSION_ID = args.session_id
 
     # Validate environment before proceeding
     validate_environment(args.mode)
