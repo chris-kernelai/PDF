@@ -362,11 +362,6 @@ def _process_single_pdf_worker(
                             # Non-OOM error, don't retry
                             raise
 
-                if chunked:
-                    combined_markdown_parts.append(
-                        f"\n<!-- CHUNK START: {chunk_label} (pages {page_offset + 1}-{page_offset + page_count}) -->\n\n"
-                    )
-
                 combined_markdown_parts.append(markdown)
 
                 # Explicitly delete large objects to free memory after chunk processing
@@ -377,11 +372,6 @@ def _process_single_pdf_worker(
                     import gc
                     gc.collect()
                     logging.debug(f"  Memory cleanup after {chunk_label}")
-
-                if chunked:
-                    combined_markdown_parts.append(
-                        f"\n<!-- CHUNK END: {chunk_label} -->\n"
-                    )
 
             combined_markdown = "".join(combined_markdown_parts)
 
