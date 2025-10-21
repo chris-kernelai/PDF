@@ -30,17 +30,17 @@ ERRORS=0
 
 # Check 1: Virtual environment
 echo -n "Checking virtual environment... "
-if [ -d "venv" ]; then
+if [ -d "workspace/venv" ]; then
     echo -e "${GREEN}✓${NC}"
 else
-    echo -e "${RED}✗ venv directory not found${NC}"
-    echo "  Run: python3 -m venv venv"
+    echo -e "${RED}✗ workspace/venv directory not found${NC}"
+    echo "  Run: ./SETUP_1_python_venv.sh"
     ERRORS=$((ERRORS + 1))
 fi
 
 # Check 2: Activate venv and check packages
-if [ -d "venv" ]; then
-    source venv/bin/activate
+if [ -d "workspace/venv" ]; then
+    source workspace/venv/bin/activate
 
     echo -n "Checking Python packages... "
     MISSING_PACKAGES=""
@@ -64,14 +64,14 @@ if [ -d "venv" ]; then
         echo -e "${GREEN}✓${NC}"
     else
         echo -e "${RED}✗ Missing:$MISSING_PACKAGES${NC}"
-        echo "  Run: pip install -r requirements.txt"
+        echo "  Run: pip install -r workspace/configs/requirements.txt"
         ERRORS=$((ERRORS + 1))
     fi
 fi
 
 # Check 3: Required directories
 echo -n "Checking directories... "
-REQUIRED_DIRS="data/to_process data/processed data/processed_raw data/processed_images .generated"
+REQUIRED_DIRS="workspace/data/to_process workspace/data/processed workspace/data/processed_raw workspace/data/processed_images workspace/.generated"
 MISSING_DIRS=""
 for dir in $REQUIRED_DIRS; do
     if [ ! -d "$dir" ]; then
@@ -144,21 +144,26 @@ fi
 
 # Check 7: Config file
 echo -n "Checking config.yaml... "
-if [ -f "config.yaml" ]; then
+if [ -f "workspace/configs/config.yaml" ]; then
     echo -e "${GREEN}✓${NC}"
 else
-    echo -e "${YELLOW}⚠ config.yaml not found${NC}"
+    echo -e "${YELLOW}⚠ workspace/configs/config.yaml not found${NC}"
 fi
 
 # Check 8: Pipeline scripts
 echo -n "Checking pipeline scripts... "
-REQUIRED_SCRIPTS="1_fetch_documents.py 2_batch_convert_pdfs.py 3a_prepare_image_batches.py 5_integrate_descriptions.py run_pipeline.sh"
+REQUIRED_SCRIPTS="run_pipeline.py run_pipeline.sh run_pipeline_md_only.sh run_pipeline_images_only.sh"
 MISSING_SCRIPTS=""
 for script in $REQUIRED_SCRIPTS; do
     if [ ! -f "$script" ]; then
         MISSING_SCRIPTS="$MISSING_SCRIPTS $script"
     fi
 done
+
+# Also check workspace structure
+if [ ! -d "workspace/src" ] || [ ! -d "workspace/scripts" ]; then
+    MISSING_SCRIPTS="$MISSING_SCRIPTS workspace/src workspace/scripts"
+fi
 
 if [ -z "$MISSING_SCRIPTS" ]; then
     echo -e "${GREEN}✓${NC}"

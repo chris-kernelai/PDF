@@ -28,29 +28,30 @@ echo "=========================================="
 echo ""
 
 # Check if we're in the right directory
-if [ ! -f "requirements.txt" ]; then
-    echo -e "${RED}❌ requirements.txt not found${NC}"
+REQUIREMENTS_FILE="workspace/configs/requirements.txt"
+if [ ! -f "$REQUIREMENTS_FILE" ]; then
+    echo -e "${RED}❌ $REQUIREMENTS_FILE not found${NC}"
     echo "Make sure you're in the pdf_pipeline directory"
     exit 1
 fi
 
 # Remove existing venv if requested
-if [ -d "venv" ]; then
+if [ -d "workspace/venv" ]; then
     echo -e "${YELLOW}Virtual environment already exists${NC}"
     read -p "Remove and recreate? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "Removing old virtual environment..."
-        rm -rf venv
+        rm -rf workspace/venv
     else
         echo "Keeping existing venv, will reinstall packages..."
     fi
 fi
 
 # Create virtual environment
-if [ ! -d "venv" ]; then
+if [ ! -d "workspace/venv" ]; then
     echo -e "${BLUE}Creating virtual environment...${NC}"
-    python3 -m venv venv
+    python3 -m venv workspace/venv
     echo -e "${GREEN}✓${NC} Virtual environment created"
 else
     echo -e "${GREEN}✓${NC} Using existing virtual environment"
@@ -58,7 +59,7 @@ fi
 
 # Activate virtual environment
 echo -e "${BLUE}Activating virtual environment...${NC}"
-source venv/bin/activate
+source workspace/venv/bin/activate
 
 # Upgrade pip
 echo -e "${BLUE}Upgrading pip...${NC}"
@@ -67,14 +68,16 @@ pip install --upgrade pip -q
 # Install dependencies
 echo -e "${BLUE}Installing dependencies...${NC}"
 echo "This may take several minutes..."
-pip install -r requirements.txt
+pip install -r "$REQUIREMENTS_FILE"
 
 echo -e "${GREEN}✓${NC} All packages installed"
 
 # Create required directories
 echo -e "${BLUE}Creating required directories...${NC}"
-mkdir -p data/{to_process,processed,processed_raw,processed_images,images}
-mkdir -p .generated
+mkdir -p workspace/data/{to_process,processed,processed_raw,processed_images,images}
+mkdir -p workspace/logs
+mkdir -p workspace/state
+mkdir -p workspace/.generated
 
 echo -e "${GREEN}✓${NC} Directories created"
 
@@ -93,7 +96,7 @@ pip show psycopg2-binary 2>/dev/null | grep "Name:\|Version:" || echo "  psycopg
 pip show google-cloud-aiplatform 2>/dev/null | grep "Name:\|Version:" || echo "  google-cloud-aiplatform: not found"
 echo ""
 echo "To activate the virtual environment:"
-echo "  source venv/bin/activate"
+echo "  source workspace/venv/bin/activate"
 echo ""
 echo "To verify setup:"
 echo "  ./SETUP_2_verify_environment.sh"

@@ -999,6 +999,7 @@ async def run_integrate_images(args: argparse.Namespace) -> None:
         descriptions_dir,
         doc_ids,
         getattr(args, "force_reintegrate", False),
+        args.session_id,
     )
 
     logger.info(

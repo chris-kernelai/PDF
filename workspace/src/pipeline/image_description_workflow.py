@@ -272,6 +272,7 @@ class ImageDescriptionWorkflow:
             download_result.descriptions_dir,
             prep_result.doc_ids,
             force_reintegrate,
+            session_id,
         )
 
         summary = UploadSummary()
@@ -623,6 +624,7 @@ class ImageDescriptionWorkflow:
         descriptions_dir: Path,
         target_doc_ids: Optional[Iterable[int]] = None,
         force_overwrite: bool = False,
+        current_session_id: Optional[str] = None,
     ) -> IntegrationResult:
         integrator = ImageDescriptionIntegrator(
             markdown_dir=self.processed_markdown_dir,
@@ -632,7 +634,7 @@ class ImageDescriptionWorkflow:
             overwrite=force_overwrite,
         )
 
-        descriptions = integrator.load_all_descriptions()
+        descriptions = integrator.load_all_descriptions(current_session_id=current_session_id)
 
         if target_doc_ids is not None:
             allowed = {str(int(doc_id)) for doc_id in target_doc_ids}

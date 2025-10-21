@@ -451,6 +451,7 @@ class BatchDoclingConverter:
             "upload_failed_files": 0,
             "skipped_already_processed": 0,
             "skipped_has_both_reps": 0,
+            "skipped_markdown_exists": 0,
             "total_images_extracted": 0,
         }
 
@@ -551,6 +552,13 @@ class BatchDoclingConverter:
 
             if self._is_already_processed(file_path):
                 self.stats["skipped_already_processed"] += 1
+                continue
+
+            # Skip if markdown output already exists
+            output_path = self._get_output_path(file_path)
+            if output_path.exists():
+                self.logger.info("Skipping %s - markdown already exists at %s", file_path.name, output_path)
+                self.stats["skipped_markdown_exists"] += 1
                 continue
 
             pdf_files.append(file_path)

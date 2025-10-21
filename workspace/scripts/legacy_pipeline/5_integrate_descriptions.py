@@ -97,17 +97,31 @@ class ImageDescriptionIntegrator:
             logger.error(f"Failed to load UUID tracking: {e}")
             return {}
 
-    def load_all_descriptions(self) -> Dict[str, List[Dict]]:
+    def load_all_descriptions(self, current_session_id: Optional[str] = None) -> Dict[str, List[Dict]]:
         """
         Load all image descriptions from batch result files, filtering by latest UUID.
+
+        Args:
+            current_session_id: If provided, descriptions from this session will NOT be filtered
+                               even if UUID tracking shows a different latest_uuid. This prevents
+                               race conditions when multiple batches run concurrently.
 
         Returns:
             Dictionary mapping document_id to list of image descriptions
         """
         logger.info(f"Loading descriptions from {self.descriptions_dir}")
+        logger.info(f"🔍 DEBUG: current_session_id={current_session_id}")
 
         # Load UUID tracking first
         uuid_tracking = self.load_uuid_tracking()
+        if uuid_tracking:
+            logger.info(f"🔍 DEBUG: UUID tracking loaded for {len(uuid_tracking)} docs")
+            # Show first few entries
+            sample_docs = list(uuid_tracking.keys())[:3]
+            for doc_id in sample_docs:
+                logger.info(f"🔍 DEBUG: UUID tracking doc {doc_id}: latest={uuid_tracking[doc_id].get('latest_uuid')}")
+        else:
+            logger.info(f"🔍 DEBUG: No UUID tracking loaded")
 
         descriptions_by_doc = defaultdict(list)
         all_descriptions = []
@@ -130,10 +144,11 @@ class ImageDescriptionIntegrator:
                     descriptions = json.load(f)
 
                 # Infer batch_uuid from filename if not in records
-                # Filename format: image_descriptions_5070b6b9_0001.json
+                # Filename format: image_descriptions_5070b6b9_0001.json or image_descriptions_214457d1-001_0001.json
                 import re
-                uuid_match = re.search(r"image_descriptions_([a-f0-9]+)_\d+\.json", json_file.name)
+                uuid_match = re.search(r"image_descriptions_([a-f0-9]+-?\d*)_\d+\.json", json_file.name)
                 inferred_uuid = uuid_match.group(1) if uuid_match else None
+                logger.info(f"🔍 DEBUG: File {json_file.name} -> inferred_uuid={inferred_uuid}")
 
                 for desc in descriptions:
                     if "batch_uuid" not in desc and inferred_uuid:
@@ -199,12 +214,21 @@ class ImageDescriptionIntegrator:
             batch_uuid = desc.get("batch_uuid", "")
 
             # If we have UUID tracking, only keep descriptions from latest UUID
+            # BUT: Never filter out descriptions from the current session (avoids race conditions)
             if uuid_tracking and doc_id in uuid_tracking:
                 latest_uuid = uuid_tracking[doc_id]["latest_uuid"]
                 if batch_uuid != latest_uuid:
-                    logger.debug(f"Filtering out {desc['key']} (UUID: {batch_uuid}, latest: {latest_uuid})")
-                    filtered_count += 1
-                    continue
+                    # Don't filter if this is the current session
+                    if current_session_id and batch_uuid == current_session_id:
+                        logger.info(f"🔍 DEBUG: KEEPING {desc['key']} from current session (batch_uuid={batch_uuid}, current_session_id={current_session_id})")
+                    else:
+                        if filtered_count < 5:  # Only show first few
+                            logger.info(f"🔍 DEBUG: FILTERING {desc['key']} (batch_uuid={batch_uuid}, latest={latest_uuid}, current_session_id={current_session_id})")
+                        filtered_count += 1
+                        continue
+                else:
+                    if filtered_count == 0 and len(descriptions_by_doc[doc_id]) < 2:  # Show first match
+                        logger.info(f"🔍 DEBUG: MATCH {desc['key']} (batch_uuid={batch_uuid} == latest={latest_uuid})")
 
             descriptions_by_doc[doc_id].append(desc)
 

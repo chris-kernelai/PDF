@@ -231,6 +231,9 @@ case "$COMMAND" in
             "run_pipeline_md_only.sh"
             "run_pipeline_images_only.sh"
             "run_pipeline_md_upload.sh"
+            "run_integrate_images.sh"
+            "SETUP_1_python_venv.sh"
+            "SETUP_2_verify_environment.sh"
         )
 
         for file in "${FILES_TO_COPY[@]}"; do
@@ -259,7 +262,7 @@ case "$COMMAND" in
         fi
 
         debug "Setting execute permissions on remote wrappers"
-        ssh -i "$PEM_KEY" "$SSH_TARGET" "cd $REMOTE_DIR && chmod +x run_pipeline.sh run_pipeline_md_only.sh run_pipeline_images_only.sh 2>/dev/null || true"
+        ssh -i "$PEM_KEY" "$SSH_TARGET" "cd $REMOTE_DIR && chmod +x run_pipeline.sh run_pipeline_md_only.sh run_pipeline_images_only.sh run_pipeline_md_upload.sh run_integrate_images.sh SETUP_1_python_venv.sh SETUP_2_verify_environment.sh 2>/dev/null || true"
 
         echo -e "${GREEN}✅ Code synced (excludes data and venv)${NC}"
         ;;
