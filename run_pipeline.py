@@ -191,7 +191,20 @@ async def run_markdown_only(args: argparse.Namespace) -> None:
     print(f"DEBUG: Markdown conversion stats: {stats}", file=sys.stderr)
 
     if getattr(args, "upload_docling", False):
-        doc_ids = stats.get("doc_ids_processed", [])
+        doc_ids = list(stats.get("doc_ids_processed", []))
+        if not doc_ids:
+            doc_ids = _discover_existing_markdown_doc_ids(
+                args.output_folder,
+                min_doc_id=args.min_doc_id,
+                max_doc_id=args.max_doc_id,
+                limit=args.limit,
+            )
+            if doc_ids:
+                logger.info(
+                    "Found %s existing markdown files to upload from %s",
+                    len(doc_ids),
+                    args.output_folder,
+                )
         upload_summary = await upload_docling_markdown(
             doc_ids,
             args.output_folder,
@@ -266,6 +279,41 @@ async def upload_docling_markdown(
         await uploader.close()
 
     return summary
+
+
+def _discover_existing_markdown_doc_ids(
+    output_folder: Path,
+    *,
+    min_doc_id: int | None,
+    max_doc_id: int | None,
+    limit: int | None,
+) -> list[int]:
+    if not output_folder.exists():
+        return []
+
+    doc_ids: set[int] = set()
+    for md_path in sorted(output_folder.glob("*.md")):
+        stem = md_path.stem
+        if stem.startswith("doc_"):
+            candidate = stem[4:]
+        else:
+            candidate = stem
+        try:
+            doc_id = int(candidate)
+        except ValueError:
+            continue
+
+        if min_doc_id is not None and doc_id < min_doc_id:
+            continue
+        if max_doc_id is not None and doc_id > max_doc_id:
+            continue
+
+        doc_ids.add(doc_id)
+
+    ordered = sorted(doc_ids)
+    if limit is not None:
+        ordered = ordered[:limit]
+    return ordered
 
 
 def _parse_doc_id_from_path(pdf_path: Path) -> int | None:
