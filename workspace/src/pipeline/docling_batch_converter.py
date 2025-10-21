@@ -533,17 +533,25 @@ class BatchDoclingConverter:
 
     def _get_pdf_files(self) -> List[Path]:
         pdf_files: List[Path] = []
-        for extension in ("*.pdf", "**/*.pdf"):
-            for file_path in self.input_folder.glob(extension):
-                if not file_path.is_file():
-                    continue
-                if self._is_already_processed(file_path):
-                    self.stats["skipped_already_processed"] += 1
-                    continue
-                pdf_files.append(file_path)
+        seen: Set[Path] = set()
+
+        for file_path in self.input_folder.glob("*.pdf"):
+            if not file_path.is_file():
+                continue
+
+            resolved = file_path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+
+            if self._is_already_processed(file_path):
+                self.stats["skipped_already_processed"] += 1
+                continue
+
+            pdf_files.append(file_path)
 
         pdf_files.sort()
-        self.logger.info(f"Found {len(pdf_files)} PDF files before filtering")
+        self.logger.info(f"Found {len(pdf_files)} PDF files before filtering in %s", self.input_folder)
         filtered_files = self._filter_input_files(pdf_files)
         self.logger.info(f"After filtering by doc ID range ({self.min_doc_id}-{self.max_doc_id}): {len(filtered_files)} files")
         if filtered_files and len(filtered_files) <= 20:

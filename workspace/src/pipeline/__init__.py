@@ -3,6 +3,10 @@
 from .docling_batch_converter import BatchDoclingConverter, convert_folder
 from .document_fetcher import DocumentFetcher, FetchStats
 from .image_description_workflow import ImageDescriptionWorkflow, UploadSummary
+from .docling_markdown_downloader import (
+    DoclingMarkdownDownloader,
+    MarkdownDownloadResult,
+)
 from .supabase import (
     SupabaseConfig,
     fetch_existing_representations,
@@ -18,6 +22,8 @@ __all__ = [
     "FetchStats",
     "ImageDescriptionWorkflow",
     "UploadSummary",
+    "DoclingMarkdownDownloader",
+    "MarkdownDownloadResult",
     "SupabaseConfig",
     "fetch_existing_representations",
     "fetch_doc_ids_missing_docling_img",
