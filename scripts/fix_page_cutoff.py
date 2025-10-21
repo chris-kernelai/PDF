@@ -17,7 +17,6 @@ import csv
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Set
 
@@ -26,6 +25,7 @@ import aiofiles
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -45,7 +45,7 @@ UPLOAD_DIR = Path("scripts/data/fix_upload")
 class PageCutoffFixer:
     """Fixes page cutoff issues in DOCLING representations."""
     
-    def __init__(self, aws_profile: Optional[str] = None, dry_run: bool = False):
+    def __init__(self, aws_profile: Optional[str] = None, dry_run: bool = False, verbose: bool = False):
         # Use IAM role if no explicit credentials, otherwise use profile
         if os.getenv("AWS_ACCESS_KEY_ID"):
             self.aws_profile = None  # Use IAM role or explicit credentials
@@ -56,6 +56,7 @@ class PageCutoffFixer:
         else:
             self.aws_profile = None  # Use IAM role by default
         self.dry_run = dry_run
+        self.verbose = verbose
         self.s3_client = None
         self.uploader = None
         self.api_key = os.getenv("API_KEY")
@@ -69,19 +70,14 @@ class PageCutoffFixer:
             if self.aws_profile:
                 session = boto3.Session(profile_name=self.aws_profile)
                 self.s3_client = session.client("s3", region_name=self.aws_region)
-                print(f"✅ S3 client ready (profile={self.aws_profile})")
             else:
                 # Use IAM role or default credential chain
                 self.s3_client = boto3.client("s3", region_name=self.aws_region)
-                print("✅ S3 client ready (IAM role)")
             
             # Only initialize uploader if not in dry run mode
             if not self.dry_run:
                 self.uploader = DocumentRepresentationUploader(aws_profile=self.aws_profile)
                 await self.uploader.initialize()
-                print("✅ Uploader initialized")
-            else:
-                print("✅ Initialized S3 client (dry run mode - no database connection needed)")
             
         except NoCredentialsError:
             if self.aws_profile:
@@ -127,32 +123,37 @@ class PageCutoffFixer:
     async def download_document(self, doc_id: int, doc_info: Dict[str, Dict[str, str]]) -> Optional[Path]:
         """Download a DOCLING document from S3."""
         if "docling" not in doc_info:
-            print(f"⚠️  No DOCLING representation for doc {doc_id}")
             return None
-        
-        s3_key = doc_info["docling"]["s3_key"]
-        bucket = doc_info["docling"]["bucket"]
         
         # Create download path
         download_path = DOWNLOAD_DIR / f"doc_{doc_id}.md"
         download_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # Check if file already exists
+        if download_path.exists():
+            if self.verbose:
+                print(f"📂 Using cached markdown for doc {doc_id}")
+            return download_path
+        
+        s3_key = doc_info["docling"]["s3_key"]
+        bucket = doc_info["docling"]["bucket"]
+        
         try:
             if self.s3_client:
                 self.s3_client.download_file(bucket, s3_key, str(download_path))
-                print(f"📥 Downloaded doc {doc_id}: s3://{bucket}/{s3_key}")
                 return download_path
             else:
-                print("❌ S3 client not initialized")
                 return None
         except ClientError as e:
-            print(f"❌ Failed to download doc {doc_id}: {e}")
+            if self.verbose:
+                print(f"❌ Failed to download doc {doc_id}: {e}")
             return None
     
     async def _get_download_urls_batch(self, session: aiohttp.ClientSession, document_ids: list[int]) -> Dict[int, Optional[str]]:
         """Get presigned download URLs for a batch of document IDs."""
         if not self.api_key:
-            print("❌ API_KEY not set, cannot download PDFs")
+            if self.verbose:
+                print("❌ API_KEY not set, cannot download PDFs")
             return {}
         
         payload = {
@@ -188,17 +189,20 @@ class PageCutoffFixer:
                         error = result.get("error")
                         
                         if error:
-                            print(f"⚠️  Document {doc_id} download failed: {error}")
+                            if self.verbose:
+                                print(f"⚠️  Document {doc_id} download failed: {error}")
                             url_map[doc_id] = None
                         else:
                             url_map[doc_id] = download_url
                     
                     return url_map
                 else:
-                    print(f"❌ Failed to get download URLs: HTTP {response.status}")
+                    if self.verbose:
+                        print(f"❌ Failed to get download URLs: HTTP {response.status}")
                     return {}
         except Exception as e:
-            print(f"❌ Error getting download URLs: {e}")
+            if self.verbose:
+                print(f"❌ Error getting download URLs: {e}")
             return {}
     
     async def _download_pdf(self, session: aiohttp.ClientSession, document_id: int, pdf_url: str) -> Optional[Path]:
@@ -206,23 +210,30 @@ class PageCutoffFixer:
         if not pdf_url:
             return None
         
+        pdf_filename = f"doc_{document_id}.pdf"
+        pdf_path = DOWNLOAD_DIR / pdf_filename
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Check if file already exists
+        if pdf_path.exists():
+            if self.verbose:
+                print(f"📂 Using cached PDF for doc {document_id}")
+            return pdf_path
+        
         try:
             async with session.get(pdf_url) as response:
                 if response.status == 200:
-                    pdf_filename = f"doc_{document_id}.pdf"
-                    pdf_path = DOWNLOAD_DIR / pdf_filename
-                    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-                    
                     async with aiofiles.open(pdf_path, "wb") as f:
                         await f.write(await response.read())
                     
-                    print(f"📥 Downloaded PDF: {pdf_filename}")
                     return pdf_path
                 else:
-                    print(f"❌ Failed to download PDF for doc {document_id}: HTTP {response.status}")
+                    if self.verbose:
+                        print(f"❌ Failed to download PDF for doc {document_id}: HTTP {response.status}")
                     return None
         except Exception as e:
-            print(f"❌ Error downloading PDF for doc {document_id}: {e}")
+            if self.verbose:
+                print(f"❌ Error downloading PDF for doc {document_id}: {e}")
             return None
     
     def find_missing_pages(self, markdown_content: str, total_pages: int) -> Set[int]:
@@ -231,17 +242,13 @@ class PageCutoffFixer:
         page_markers = re.findall(r'<!-- PAGE (\d+) -->', markdown_content)
         existing_pages = {int(page) for page in page_markers}
         
-        print(f"🔍 Found existing pages: {sorted(existing_pages)}")
-        
         if not existing_pages:
-            print("❌ No page markers found in document")
             return set()
         
         # Find ALL missing pages by comparing against expected range
         expected_pages = set(range(1, total_pages + 1))
         missing_pages = expected_pages - existing_pages
         
-        print(f"🔍 Missing pages: {sorted(missing_pages)}")
         return missing_pages
     
     def extract_page_content_from_pdf(self, pdf_path: Path, page_num: int, converter: DoclingConverter) -> str:
@@ -266,27 +273,27 @@ class PageCutoffFixer:
             # print(f"    💾 Saved single-page PDF: {single_page_pdf}")
             
             # Check what we actually extracted (using temporary file)
-            import tempfile
-            import os
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            import tempfile as tmp
+            import os as os_module
+            with tmp.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                 writer.write(temp_file)
                 temp_file.flush()
                 
-                test_reader = PdfReader(temp_file.name)
-                # print(f"    🔍 Single-page PDF has {len(test_reader.pages)} pages")
-                # if len(test_reader.pages) > 0:
-                #     test_text = test_reader.pages[0].extract_text()
-                #     print(f"    🔍 Single-page PDF text length: {len(test_text)}")
-                #     print(f"    🔍 Single-page PDF text preview: {repr(test_text[:200])}")
-                
                 # Convert the single-page PDF using the direct export method
-                markdown, document, _ = converter.convert_pdf(temp_file.name, page_offset=0)
+                markdown, _, _ = converter.convert_pdf(temp_file.name, page_offset=0)
                 
                 # Clean up temp file
-                os.unlink(temp_file.name)
+                os_module.unlink(temp_file.name)
             
-            # Use the direct export_to_markdown method which actually works
-            markdown = document.export_to_markdown()
+            # Extract just the page content (remove page markers and "Page X" headers)
+            # The markdown from convert_pdf includes page markers which we don't want
+            import re as re_module
+            # Remove "Page X" headers
+            markdown = re_module.sub(r'^Page \d+\s*\n', '', markdown, flags=re_module.MULTILINE)
+            # Remove page markers
+            markdown = re_module.sub(r'<!-- PAGE \d+ -->', '', markdown)
+            # Clean up extra whitespace
+            markdown = markdown.strip()
             
             # print(f"    🔍 Direct export output: {len(markdown)} chars")
             # print(f"    🔍 Direct export preview: {repr(markdown[:200])}")
@@ -308,8 +315,6 @@ class PageCutoffFixer:
         if not missing_pages:
             return markdown_content
         
-        print(f"🔧 Fixing missing pages: {sorted(missing_pages)}")
-        
         # Create a single converter instance to reuse
         converter = DoclingConverter()
         
@@ -317,23 +322,11 @@ class PageCutoffFixer:
             # Extract all missing pages first
             extracted_pages = {}
             for page_num in sorted(missing_pages):
-                print(f"  📄 Extracting page {page_num} from PDF...")
                 page_content = self.extract_page_content_from_pdf(pdf_path, page_num, converter)
                 if page_content:
                     extracted_pages[page_num] = page_content
-                    print(f"  ✅ Extracted page {page_num}")
-                    # Debug: show content length and first few lines
-                    content_lines = page_content.strip().split('\n')
-                    non_empty_lines = [line for line in content_lines if line.strip()]
-                    print(f"  🔍 Page {page_num} content: {len(page_content)} chars, {len(non_empty_lines)} non-empty lines")
-                    print(f"  🔍 Raw content: '{repr(page_content)}'")
-                    if non_empty_lines:
-                        print(f"  🔍 First line: '{non_empty_lines[0][:100]}...'")
-                else:
-                    print(f"  ❌ Failed to extract page {page_num}")
             
             if not extracted_pages:
-                print("  ⚠️  No pages could be extracted, returning original content")
                 return markdown_content
             
             # Now insert the extracted pages into the content
@@ -341,7 +334,6 @@ class PageCutoffFixer:
             page_markers = list(re.finditer(r'<!-- PAGE (\d+) -->', markdown_content))
             
             if not page_markers:
-                print("  ⚠️  No page markers found, cannot insert pages")
                 return markdown_content
             
             # Build the fixed content by inserting missing pages
@@ -374,29 +366,33 @@ class PageCutoffFixer:
                         result_content = (result_content[:next_page_pos] + 
                                        f"\n\n<!-- PAGE {page_num} -->\n\n{extracted_pages[page_num]}\n\n" +
                                        result_content[next_page_pos:])
-                        print(f"  ✅ Inserted page {page_num} before page {next_page}")
                     else:
                         # No next page marker found - this is the last page, put it at the end
                         result_content += f"\n\n<!-- PAGE {page_num} -->\n\n{extracted_pages[page_num]}"
-                        print(f"  ✅ Inserted page {page_num} at the end")
             
             return result_content
         
         except Exception as e:
-            print(f"❌ Error inserting missing pages: {e}")
+            if self.verbose:
+                print(f"❌ Error inserting missing pages: {e}")
             return markdown_content
         finally:
             # Clean up the converter
             converter.cleanup()
     
-    async def fix_document(self, doc_id: int, doc_info: Dict[str, Dict[str, str]]) -> bool:
-        """Fix a single document by downloading, fixing, and reuploading."""
-        print(f"\n🔍 Processing document {doc_id}...")
+    async def fix_document(self, doc_id: int, doc_info: Dict[str, Dict[str, str]], pbar: tqdm) -> dict:
+        """Fix a single document by downloading, fixing, and reuploading.
+        
+        Returns dict with status and details for reporting.
+        """
+        result = {"doc_id": doc_id, "status": "error", "missing_pages": [], "reprocessed": False}
         
         # Download the DOCLING representation
         markdown_path = await self.download_document(doc_id, doc_info)
         if not markdown_path:
-            return False
+            result["status"] = "skip"
+            pbar.update(1)
+            return result
         
         # Read the markdown content
         with open(markdown_path, "r", encoding="utf-8") as f:
@@ -411,51 +407,53 @@ class PageCutoffFixer:
             page_markers = re.findall(r'<!-- PAGE (\d+) -->', markdown_content)
             if page_markers:
                 total_pages = max(int(page) for page in page_markers)
-                print(f"📊 Inferred page count from content: {total_pages}")
             else:
-                print(f"⚠️  No page markers found for doc {doc_id}, skipping")
-                return False
+                result["status"] = "skip"
+                pbar.update(1)
+                return result
         
         if total_pages <= 0:
-            print(f"⚠️  Invalid page count for doc {doc_id}, skipping")
-            return False
+            result["status"] = "skip"
+            pbar.update(1)
+            return result
         
         # Download the original PDF first to get accurate page count
-        print(f"📥 Downloading original PDF for doc {doc_id}...")
         async with aiohttp.ClientSession() as session:
             url_map = await self._get_download_urls_batch(session, [doc_id])
             pdf_url = url_map.get(doc_id)
             
             if not pdf_url:
-                print(f"❌ Could not get download URL for doc {doc_id}")
-                return False
+                result["status"] = "error"
+                pbar.update(1)
+                return result
             
             pdf_path = await self._download_pdf(session, doc_id, pdf_url)
             if not pdf_path:
-                print(f"❌ Could not download PDF for doc {doc_id}")
-                return False
+                result["status"] = "error"
+                pbar.update(1)
+                return result
             
             # Get the actual page count from the PDF
             try:
                 from pypdf import PdfReader
                 pdf_reader = PdfReader(pdf_path)
                 actual_page_count = len(pdf_reader.pages)
-                print(f"📊 PDF has {actual_page_count} pages")
                 total_pages = actual_page_count
             except Exception as e:
-                print(f"❌ Failed to read PDF page count: {e}")
+                if self.verbose:
+                    print(f"❌ Failed to read PDF page count: {e}")
                 # Keep the original total_pages from CSV/content analysis
         
         # Find missing pages with correct total page count
         missing_pages = self.find_missing_pages(markdown_content, total_pages)
         if not missing_pages:
-            print(f"✅ Doc {doc_id} has all pages, no fix needed")
-            return True
+            result["status"] = "ok"
+            pbar.update(1)
+            return result
         
-        print(f"🔧 Found missing pages: {sorted(missing_pages)}")
+        result["missing_pages"] = sorted(missing_pages)
         
         # Extract missing pages from PDF and insert them
-        print(f"🔧 Extracting and inserting missing pages...")
         fixed_content = self.insert_missing_pages(markdown_content, missing_pages, pdf_path, total_pages)
         
         # Save the fixed content
@@ -465,14 +463,8 @@ class PageCutoffFixer:
         with open(fixed_path, "w", encoding="utf-8") as f:
             f.write(fixed_content)
         
-        print(f"✅ Fixed document saved to: {fixed_path}")
-        
-        # Clean up downloaded PDF
-        # pdf_path.unlink()  # Commented out for debugging
-        
         if not self.dry_run:
             # Upload the fixed content back to S3 (replace existing)
-            print(f"📤 Uploading fixed content for doc {doc_id}...")
             try:
                 # Save the fixed content to a temporary file for upload (as .txt)
                 temp_file = UPLOAD_DIR / f"temp_doc_{doc_id}.txt"
@@ -480,7 +472,7 @@ class PageCutoffFixer:
                     f.write(fixed_content)
                 
                 # Upload using custom replace method
-                result = await self.replace_docling_representation(
+                await self.replace_docling_representation(
                     document_id=doc_id,
                     docling_file=str(temp_file),
                     page_count=total_pages,
@@ -491,25 +483,27 @@ class PageCutoffFixer:
                 # Clean up temp file
                 temp_file.unlink()
                 
-                print(f"✅ Successfully uploaded fixed content for doc {doc_id}")
-                print(f"📊 Upload result: {result}")
+                result["status"] = "fixed"
+                result["reprocessed"] = True
             except Exception as e:
-                print(f"❌ Failed to upload fixed content for doc {doc_id}: {e}")
-                return False
+                if self.verbose:
+                    print(f"❌ Failed to upload fixed content for doc {doc_id}: {e}")
+                result["status"] = "error"
+                result["reprocessed"] = False
         else:
-            print(f"🔍 DRY RUN: Would upload fixed content for doc {doc_id}")
+            result["status"] = "fixed"
+            result["reprocessed"] = True  # Would have been reprocessed
         
-        return True
+        pbar.update(1)
+        return result
     
     async def replace_docling_representation(self, document_id: int, docling_file: str, page_count: int, s3_bucket: str, s3_key: str) -> dict:
         """Replace existing DOCLING representation by updating S3 and database."""
         try:
             # Upload file to S3
-            print(f"📤 Uploading to S3: {s3_key}")
             s3_metadata = await self.uploader.upload_file_to_s3(docling_file, s3_key)
             
             # Update database record
-            print(f"📝 Updating database record for doc {document_id}")
             async with self.uploader.db_pool.acquire() as conn:
                 await conn.execute(
                     """
@@ -529,18 +523,17 @@ class PageCutoffFixer:
             }
             
         except Exception as e:
-            print(f"❌ Failed to replace DOCLING representation: {e}")
+            if self.verbose:
+                print(f"❌ Failed to replace DOCLING representation: {e}")
             raise
     
     async def fix_all_documents(self, csv_path: Path, limit: Optional[int] = None, doc_id: Optional[int] = None):
         """Fix all documents in the CSV file."""
-        print("📋 Loading documents from CSV...")
         documents = self.load_documents_from_csv(csv_path)
         
         if doc_id:
             if doc_id in documents:
                 documents = {doc_id: documents[doc_id]}
-                print(f"🎯 Processing specific document: {doc_id}")
             else:
                 print(f"❌ Document {doc_id} not found in CSV")
                 return
@@ -549,27 +542,38 @@ class PageCutoffFixer:
             doc_ids = list(documents.keys())[-limit:]
             documents = {doc_id: documents[doc_id] for doc_id in doc_ids}
         
-        print(f"📊 Found {len(documents)} documents to process")
+        # Track results for documents with missing pages
+        docs_with_missing_pages = []
         
-        success_count = 0
-        skip_count = 0
-        error_count = 0
+        # Progress bar
+        with tqdm(total=len(documents), desc="Processing documents", unit="doc") as pbar:
+            for doc_id, doc_info in documents.items():
+                try:
+                    result = await self.fix_document(doc_id, doc_info, pbar)
+                    
+                    # Track documents with missing pages
+                    if result["missing_pages"]:
+                        docs_with_missing_pages.append(result)
+                        
+                except (FileNotFoundError, ValueError, RuntimeError, ClientError) as e:
+                    if self.verbose:
+                        print(f"❌ Error processing doc {doc_id}: {e}")
+                    pbar.update(1)
         
-        for doc_id, doc_info in documents.items():
-            try:
-                result = await self.fix_document(doc_id, doc_info)
-                if result:
-                    success_count += 1
-                else:
-                    skip_count += 1
-            except (FileNotFoundError, ValueError, RuntimeError, ClientError) as e:
-                print(f"❌ Error processing doc {doc_id}: {e}")
-                error_count += 1
-        
-        print("\n📊 Summary:")
-        print(f"  ✅ Fixed: {success_count}")
-        print(f"  ⏭️  Skipped: {skip_count}")
-        print(f"  ❌ Errors: {error_count}")
+        # Report results
+        print("\n" + "="*60)
+        if docs_with_missing_pages:
+            print(f"📋 Documents with missing pages: {len(docs_with_missing_pages)}")
+            print("="*60)
+            for result in docs_with_missing_pages:
+                doc_id = result["doc_id"]
+                missing = result["missing_pages"]
+                reprocessed = result["reprocessed"]
+                status_icon = "✅" if reprocessed else "❌"
+                print(f"{status_icon} Doc {doc_id}: Missing pages {missing} - {'Reprocessed' if reprocessed else 'Failed to reprocess'}")
+        else:
+            print("✅ All documents have complete pages")
+        print("="*60)
 
 
 async def main():
@@ -580,11 +584,12 @@ async def main():
     parser.add_argument("--limit", type=int, help="Limit number of documents to process")
     parser.add_argument("--doc-id", type=int, help="Process specific document ID")
     parser.add_argument("--dry-run", action="store_true", help="Don't actually upload, just show what would be done")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
     # Initialize fixer
-    fixer = PageCutoffFixer(aws_profile=args.profile, dry_run=args.dry_run)
+    fixer = PageCutoffFixer(aws_profile=args.profile, dry_run=args.dry_run, verbose=args.verbose)
     
     try:
         await fixer.initialize()
