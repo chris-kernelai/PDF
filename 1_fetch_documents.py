@@ -28,7 +28,7 @@ load_dotenv()
 class DocumentFetcher:
     """Fetches documents by querying PostgreSQL database directly."""
 
-    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42, min_doc_id: Optional[int] = None, max_doc_id: Optional[int] = None):
+    def __init__(self, config_path: str = "config.yaml", limit: Optional[int] = None, randomize: bool = False, random_seed: int = 42, min_doc_id: Optional[int] = None, max_doc_id: Optional[int] = None, run_all_images: bool = False):
         """
         Initialize document fetcher.
 
@@ -39,6 +39,7 @@ class DocumentFetcher:
             random_seed: Random seed for reproducible sampling (default: 42).
             min_doc_id: Minimum document ID to fetch (filter out documents with ID < this value).
             max_doc_id: Maximum document ID to fetch (filter out documents with ID > this value).
+            run_all_images: If True, fetch documents that have DOCLING but not DOCLING_IMG (ignores min/max_doc_id).
         """
         self.config = self._load_config(config_path)
         self._setup_logging()
@@ -63,6 +64,7 @@ class DocumentFetcher:
         self.random_seed = random_seed
         self.min_doc_id = min_doc_id
         self.max_doc_id = max_doc_id
+        self.run_all_images = run_all_images
 
         # Load completed documents from processing log
         self.completed_doc_ids = self._load_completed_documents()
@@ -251,6 +253,50 @@ class DocumentFetcher:
             self.logger.error(f"Failed to check Supabase for existing representations: {e}")
             # Return empty dict on error - we'll proceed without filtering
             return {}
+
+    async def _fetch_documents_missing_docling_img(self) -> List[int]:
+        """
+        Fetch document IDs from Supabase that have DOCLING representation but not DOCLING_IMG.
+
+        Returns:
+            List of document IDs that need image processing.
+        """
+        self.logger.info("Fetching documents missing DOCLING_IMG representation from Supabase...")
+
+        try:
+            # Create asyncpg connection pool
+            pool = await asyncpg.create_pool(**self.supabase_db_config)
+
+            try:
+                async with pool.acquire() as conn:
+                    # Find documents that have DOCLING but not DOCLING_IMG
+                    query = """
+                        SELECT DISTINCT d.kdocument_id
+                        FROM librarian.document_locations_v2 d
+                        WHERE d.representation_type::text = 'DOCLING'
+                        AND NOT EXISTS (
+                            SELECT 1 
+                            FROM librarian.document_locations_v2 img
+                            WHERE img.kdocument_id = d.kdocument_id
+                            AND img.representation_type::text = 'DOCLING_IMG'
+                        )
+                        ORDER BY d.kdocument_id
+                    """
+                    rows = await conn.fetch(query)
+                    
+                    doc_ids = [row["kdocument_id"] for row in rows]
+                    
+                    self.logger.info(
+                        f"Found {len(doc_ids)} documents with DOCLING but missing DOCLING_IMG"
+                    )
+                    return doc_ids
+
+            finally:
+                await pool.close()
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch documents missing DOCLING_IMG: {e}")
+            return []
 
     async def _make_request(
         self, session: aiohttp.ClientSession, endpoint: str, payload: Dict, method: str = "POST"
@@ -923,6 +969,112 @@ class DocumentFetcher:
 
         self.logger.info("=" * 80)
 
+    async def fetch_all_images_mode(self, download_pdfs: bool = True):
+        """
+        Special mode to fetch documents that have DOCLING but not DOCLING_IMG representation.
+
+        Args:
+            download_pdfs: Whether to download PDFs (True) or just populate metadata (False).
+        """
+        self.logger.info("Starting RUN-ALL-IMAGES mode: fetching documents missing DOCLING_IMG...")
+
+        # Step 1: Fetch document IDs missing DOCLING_IMG from Supabase
+        doc_ids_missing_img = await self._fetch_documents_missing_docling_img()
+
+        if not doc_ids_missing_img:
+            self.logger.warning("No documents found missing DOCLING_IMG representation")
+            return
+
+        self.logger.info(f"Found {len(doc_ids_missing_img)} documents to process")
+
+        # Step 2: Fetch document metadata from kdocuments database
+        conn = self._get_db_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Batch query for document metadata
+                query = """
+                    SELECT
+                        d.id,
+                        d.company_id,
+                        d.document_type,
+                        d.published_at as filing_date,
+                        d.source_identifier as title,
+                        d.created_at,
+                        d.updated_at,
+                        c.country,
+                        c.ticker,
+                        c.name as company_name
+                    FROM librarian.kdocuments d
+                    JOIN librarian.company c ON d.company_id = c.id
+                    WHERE d.id = ANY(%s)
+                    ORDER BY d.id
+                """
+                cur.execute(query, (doc_ids_missing_img,))
+                documents = [dict(row) for row in cur.fetchall()]
+
+                self.logger.info(f"Retrieved metadata for {len(documents)} documents")
+
+        finally:
+            conn.close()
+
+        # Step 3: Add to metadata database (skip those already processed)
+        self.logger.info("Adding documents to metadata database...")
+        for doc in documents:
+            document_id = doc.get("id")
+            company_id = doc.get("company_id")
+
+            # Skip if already successfully converted (in processing log)
+            if str(document_id) in self.completed_doc_ids:
+                self.stats["documents_skipped"] += 1
+                self.stats["documents_skipped_completed"] += 1
+                continue
+
+            # Add to metadata
+            added = self.metadata.add_document(
+                document_id=document_id,
+                company_id=company_id,
+                ticker=doc.get("ticker", ""),
+                company_name=doc.get("company_name", ""),
+                country=doc.get("country", ""),
+                document_type=doc.get("document_type", ""),
+                filing_date=doc.get("filing_date"),
+                title=doc.get("title", ""),
+                pdf_url=None,
+            )
+
+            if added:
+                self.stats["documents_added"] += 1
+            else:
+                self.stats["documents_skipped"] += 1
+
+        self.logger.info(
+            f"Added {self.stats['documents_added']} new documents, skipped {self.stats['documents_skipped']}"
+        )
+
+        # Step 4: Download PDFs
+        if download_pdfs:
+            pending = self.metadata.get_pending_downloads()
+            self.logger.info(f"Downloading {len(pending)} pending PDFs...")
+
+            if pending:
+                async with aiohttp.ClientSession() as session:
+                    await self._download_documents_batch(session, pending)
+
+        # Print final statistics
+        self.logger.info("=" * 60)
+        self.logger.info("RUN-ALL-IMAGES Mode Summary:")
+        self.logger.info(f"  Documents missing DOCLING_IMG: {len(doc_ids_missing_img)}")
+        self.logger.info(f"  Documents added to DB: {self.stats['documents_added']}")
+        self.logger.info(f"  Documents skipped: {self.stats['documents_skipped']}")
+        if self.stats['documents_skipped_completed'] > 0:
+            self.logger.info(f"    - Already completed (in processing log): {self.stats['documents_skipped_completed']}")
+        if download_pdfs:
+            self.logger.info(f"  PDFs downloaded: {self.stats['documents_downloaded']}")
+            self.logger.info(f"  Downloads failed: {self.stats['documents_failed']}")
+            if self.stats['documents_rejected_not_pdf'] > 0:
+                self.logger.info(f"    - Rejected (not valid PDF): {self.stats['documents_rejected_not_pdf']}")
+        self.logger.info("=" * 60)
+
     async def fetch_all(self, download_pdfs: bool = True):
         """
         Main entry point: fetch documents from database with type-specific country filters.
@@ -930,6 +1082,11 @@ class DocumentFetcher:
         Args:
             download_pdfs: Whether to download PDFs (True) or just populate metadata (False).
         """
+        # Check if we're in run-all-images mode
+        if self.run_all_images:
+            await self.fetch_all_images_mode(download_pdfs)
+            return
+
         self.logger.info("Starting document fetch process with type-specific country filters...")
 
         # Step 0a: Check US documents (for reference)
@@ -1068,6 +1225,11 @@ async def main():
         type=int,
         help="Maximum document ID to fetch (filter out documents with ID > this value)",
     )
+    parser.add_argument(
+        "--run-all-images",
+        action="store_true",
+        help="Fetch documents that have DOCLING but not DOCLING_IMG representation (ignores min/max doc ID)",
+    )
 
     args = parser.parse_args()
 
@@ -1077,7 +1239,8 @@ async def main():
         randomize=args.randomize,
         random_seed=args.random_seed,
         min_doc_id=args.min_doc_id,
-        max_doc_id=args.max_doc_id
+        max_doc_id=args.max_doc_id,
+        run_all_images=args.run_all_images
     )
 
     if args.stats:

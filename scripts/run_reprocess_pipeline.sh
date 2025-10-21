@@ -2,7 +2,7 @@
 ################################################################################
 # run_reprocess_pipeline.sh
 #
-# Reprocess compromised documents through image description and filter pipelines
+# Reprocess compromised documents through image description pipeline
 # This script processes documents from data/processed/ and uploads only docling_img
 # files to replace the potentially compromised ones.
 #
@@ -151,62 +151,14 @@ python3 3d_download_batch_results.py --session-id "$PIPELINE_SESSION_ID"
 success "Image description pipeline complete"
 echo ""
 
-# Step 3: Filter Pipeline
-log "STEP 3: Running filter pipeline"
-
-# 3a: Prepare filter batches
-log "  3a: Preparing filter batches..."
-python3 4a_prepare_filter_batches.py --session-id "$PIPELINE_SESSION_ID"
-
-# 3b: Upload filter batches
-log "  3b: Uploading filter batches..."
-python3 4b_upload_filter_batches.py --session-id "$PIPELINE_SESSION_ID"
-
-# 3c: Monitor filter progress (with retry)
-log "  3c: Monitoring filter progress..."
-MAX_RETRIES=60  # 60 retries = 60 minutes max wait
-RETRY_COUNT=0
-WAIT_TIME=60  # 60 seconds between checks
-
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    MONITOR_OUTPUT=$(python3 4c_monitor_filter_batches.py --session-id "$PIPELINE_SESSION_ID" 2>&1)
-    echo "$MONITOR_OUTPUT"
-    
-    if echo "$MONITOR_OUTPUT" | grep -q "All batches completed"; then
-        success "All filter batches completed"
-        break
-    elif echo "$MONITOR_OUTPUT" | grep -q "Some batches failed"; then
-        error "Some filter batches failed"
-        exit 1
-    fi
-    
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-        log "  Waiting $WAIT_TIME seconds before next check... (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
-        sleep $WAIT_TIME
-    fi
-done
-
-if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-    error "Timeout waiting for filter batches to complete"
-    exit 1
-fi
-
-# 3d: Download filter results
-log "  3d: Downloading filter results..."
-python3 4d_download_filter_results.py --session-id "$PIPELINE_SESSION_ID"
-
-success "Filter pipeline complete"
-echo ""
-
-# Step 4: Integrate descriptions
-log "STEP 4: Integrating image descriptions"
+# Step 3: Integrate descriptions
+log "STEP 3: Integrating image descriptions"
 python3 5_integrate_descriptions.py
 success "Description integration complete"
 echo ""
 
-# Step 5: Upload only docling_img files
-log "STEP 5: Uploading docling_img files to replace compromised ones"
+# Step 4: Upload only docling_img files
+log "STEP 4: Uploading docling_img files to replace compromised ones"
 python3 scripts/upload_docling_img_only.py --session-id "$PIPELINE_SESSION_ID" --profile production
 success "Docling_img upload complete"
 echo ""

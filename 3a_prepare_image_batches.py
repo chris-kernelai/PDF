@@ -219,6 +219,7 @@ def create_batch_request(
         ["2022", "55", "10"],
         ["2023", "60", "9"]
     ]
+    "financially_relevant": true
     }
 
     {
@@ -227,16 +228,19 @@ def create_batch_request(
     "x_axis": {"label": "Month", "values": ["Jan", "Feb", "Mar"]},
     "y_axis": {"label": "Sales ($)", "values": [100, 120, 150]},
     "series": [{"label": "Product A", "values": [100, 120, 150]}]
+    "financially_relevant": true
     }
 
     {
-    "type": "text",
-    "content": "Warning: Battery low (15%)",
-    "position": "top-right"
+    "type": "logo",
+    "description": "Red curved line with a red dot above it on a light blue background."
+    "financially_relevant": false
     }
 
     Output only valid JSON objects, separated by newlines if more than one.
     Do not include prose or commentary.
+
+    If the image does not contain any potentially useful data/relevant for finance and is just a stock image, logo or other filler content, mark it as "financially_relevant": false.
     """
 
     # Build request key (unique identifier)
@@ -357,14 +361,17 @@ def process_extracted_images(
 
     for doc_folder in all_doc_folders:
         doc_id = doc_folder.name
-        # Check for markdown file with doc_ prefix
+        # Check for markdown file - try both with and without doc_ prefix
         expected_md_path = processed_folder / f"doc_{doc_id}.md"
+        alt_md_path = processed_folder / f"{doc_id}.md"
 
         if expected_md_path.exists():
             doc_folders.append(doc_folder)
+        elif alt_md_path.exists():
+            doc_folders.append(doc_folder)
         else:
             skipped_folders.append(doc_id)
-            logger.debug(f"⏭️  Skipping {doc_id}: no markdown file found at {expected_md_path}")
+            logger.debug(f"⏭️  Skipping {doc_id}: no markdown file found at {expected_md_path} or {alt_md_path}")
 
     if skipped_folders:
         logger.info(f"⏭️  Skipped {len(skipped_folders)} folders without markdown files")

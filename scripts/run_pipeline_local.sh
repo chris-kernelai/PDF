@@ -65,13 +65,13 @@ log "Local pipeline start"
 # Handle integration-only mode
 if [ "$INTEGRATION_ONLY" = true ]; then
   log "Integration-only mode: skipping all processing steps"
-  DESC_DIR=".generated/image_description_batches_outputs_filtered"
+  DESC_DIR=".generated/image_description_batches_outputs"
   if [ -d "$DESC_DIR" ] && [ "$(find "$DESC_DIR" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
-    log "5: Integrating image descriptions"
+    log "4: Integrating image descriptions"
     python3 5_integrate_descriptions.py
     ok "Integration complete"
   else
-    err "No filtered description outputs found in $DESC_DIR"
+    err "No description outputs found in $DESC_DIR"
     exit 1
   fi
   log "Integration-only pipeline complete"
@@ -134,44 +134,16 @@ else
   log "3d: Downloading image batch results"
   python3 3d_download_batch_results.py --session-id "$PIPELINE_SESSION_ID"
   ok "Image description pipeline complete"
-
-  # 4a: Prepare filter batches
-  log "4a: Preparing filter batches"
-  python3 4a_prepare_filter_batches.py --session-id "$PIPELINE_SESSION_ID"
-
-  # 4b: Upload filter batches
-  log "4b: Uploading filter batches"
-  python3 4b_upload_filter_batches.py --session-id "$PIPELINE_SESSION_ID"
-
-  # 4c: Monitor filter
-  log "4c: Monitoring filter batches"
-  MAX_RETRIES=60
-  RETRY=0
-  WAIT=60
-  while [ $RETRY -lt $MAX_RETRIES ]; do
-    OUT=$(python3 4c_monitor_filter_batches.py --session-id "$PIPELINE_SESSION_ID" 2>&1 || true)
-    echo "$OUT"
-    echo "$OUT" | grep -q "✅ All batch jobs completed successfully" && break
-    echo "$OUT" | grep -q "❌ Some batch jobs failed" && { err "Some filter batches failed"; exit 1; }
-    RETRY=$((RETRY+1))
-    [ $RETRY -lt $MAX_RETRIES ] && { log "Waiting $WAIT seconds... ($RETRY/$MAX_RETRIES)"; sleep $WAIT; }
-  done
-  [ $RETRY -ge $MAX_RETRIES ] && { err "Timeout monitoring filter batches"; exit 1; }
-
-  # 4d: Download filter results
-  log "4d: Downloading filter results"
-  python3 4d_download_filter_results.py --session-id "$PIPELINE_SESSION_ID"
-  ok "Filter pipeline complete"
 fi
 
-# 5: Integrate descriptions locally (only if filtered outputs exist)
-DESC_DIR=".generated/image_description_batches_outputs_filtered"
+# 4: Integrate descriptions locally (only if outputs exist from 3d)
+DESC_DIR=".generated/image_description_batches_outputs"
 if [ -d "$DESC_DIR" ] && [ "$(find "$DESC_DIR" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
-  log "5: Integrating image descriptions"
+  log "4: Integrating image descriptions"
   python3 5_integrate_descriptions.py
   ok "Integration complete"
 else
-  warn "Skipping integration: no filtered description outputs found in $DESC_DIR"
+  warn "Skipping integration: no description outputs found in $DESC_DIR"
 fi
 
 log "Local pipeline complete"

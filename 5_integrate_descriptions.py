@@ -2,8 +2,8 @@
 """
 image_description_integrator.py
 
-Step 4: Integrate image descriptions into markdown files
-- Reads downloaded image descriptions from batch results
+Step 5: Integrate image descriptions into markdown files
+- Reads downloaded image descriptions from batch results (from step 3d)
 - Inserts descriptions into markdown files at appropriate locations
 - Creates enhanced markdown files with image descriptions
 
@@ -112,20 +112,10 @@ class ImageDescriptionIntegrator:
         descriptions_by_doc = defaultdict(list)
         all_descriptions = []
 
-        # Find all description JSON files - try multiple patterns
-        # Pattern 1: image_descriptions_*.json (original format)
+        # Find all description JSON files from step 3d output
+        # Pattern: image_descriptions_*.json (from 3d_download_batch_results.py)
         json_files = [f for f in self.descriptions_dir.glob("image_descriptions_*.json")
-                      if "_with_filters" not in f.name and "uuid_tracking" not in f.name]
-
-        # Pattern 2: filtered_descriptions.json (filter results format)
-        filtered_file = self.descriptions_dir / "filtered_descriptions.json"
-        if filtered_file.exists():
-            json_files.append(filtered_file)
-
-        # Pattern 3: filter_results_all.json (all filter results including excluded)
-        all_results_file = self.descriptions_dir / "filter_results_all.json"
-        if not json_files and all_results_file.exists():
-            json_files.append(all_results_file)
+                      if "uuid_tracking" not in f.name]
 
         if not json_files:
             logger.warning(f"No description files found in {self.descriptions_dir}")
@@ -520,12 +510,7 @@ def main():
         "--descriptions-dir",
         type=Path,
         default=None,
-        help="Directory containing description JSON files (default: .generated/{batch_prefix}_outputs_filtered)",
-    )
-    parser.add_argument(
-        "--unfiltered",
-        action="store_true",
-        help="Use unfiltered descriptions instead of filtered ones",
+        help="Directory containing description JSON files (default: .generated/{batch_prefix}_outputs)",
     )
     parser.add_argument(
         "--batch-prefix",
@@ -556,14 +541,11 @@ def main():
     print(f"📁 Input directory: {args.input_dir}")
     print(f"📁 Output directory: {args.output_dir}")
 
-    # Determine descriptions directory
+    # Determine descriptions directory - now defaults to unfiltered outputs from 3d
     if args.descriptions_dir:
         descriptions_dir = args.descriptions_dir
     else:
-        if args.unfiltered:
-            descriptions_dir = Path(f".generated/{args.batch_prefix}_outputs")
-        else:
-            descriptions_dir = Path(f".generated/{args.batch_prefix}_outputs_filtered")
+        descriptions_dir = Path(f".generated/{args.batch_prefix}_outputs")
 
     print(f"📁 Descriptions directory: {descriptions_dir}")
     print(f"🎨 Format: {args.format}")

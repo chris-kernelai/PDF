@@ -19,7 +19,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
 from google import genai
@@ -277,11 +277,22 @@ def update_uuid_tracking(processed_results: List[Dict], output_dir: str):
     print(f"📝 Updated UUID tracking: {tracking_file}")
 
 
-def process_results(results: List[Dict]) -> List[Dict]:
-    """Process batch results to extract image descriptions"""
+def process_results(results: List[Dict]) -> Tuple[List[Dict], Dict[str, int]]:
+    """
+    Process batch results to extract image descriptions.
+    
+    Returns:
+        Tuple of (processed_results, stats) where stats contains filtering information
+    """
     print(f"\n🔄 Processing {len(results)} result entries")
 
     processed_results = []
+    stats = {
+        "total_results": len(results),
+        "skipped_not_relevant": 0,
+        "kept_relevant": 0,
+        "parse_errors": 0,
+    }
 
     for i, result in enumerate(results):
         try:
@@ -322,6 +333,42 @@ def process_results(results: List[Dict]) -> List[Dict]:
                 print(f"⚠️  Warning: Failed to extract description for {key}: {e}")
                 description = None
 
+            # Filter based on financially_relevant key
+            if description:
+                try:
+                    # Try to parse as JSON to check for financially_relevant key
+                    # Handle both single JSON objects and markdown-wrapped JSON
+                    desc_text = description.strip()
+                    
+                    # Remove markdown code fences if present
+                    if desc_text.startswith("```json"):
+                        desc_text = desc_text[7:]  # Remove ```json
+                    elif desc_text.startswith("```"):
+                        desc_text = desc_text[3:]  # Remove ```
+                    if desc_text.endswith("```"):
+                        desc_text = desc_text[:-3]
+                    desc_text = desc_text.strip()
+                    
+                    # Try to parse the JSON
+                    desc_json = json.loads(desc_text)
+                    
+                    # Check if financially_relevant key exists
+                    if "financially_relevant" in desc_json:
+                        if desc_json["financially_relevant"] is False:
+                            # Skip this image entirely
+                            stats["skipped_not_relevant"] += 1
+                            print(f"  ⏭️  {key}: Skipped (not financially relevant)")
+                            continue
+                        else:
+                            # Remove the financially_relevant key and convert back to JSON string
+                            del desc_json["financially_relevant"]
+                            description = json.dumps(desc_json, indent=2, ensure_ascii=False)
+                            stats["kept_relevant"] += 1
+                            
+                except (json.JSONDecodeError, ValueError):
+                    # If JSON parsing fails, keep the description as-is
+                    stats["parse_errors"] += 1
+
             processed_results.append({
                 "batch_uuid": batch_uuid,
                 "document_id": doc_id,
@@ -339,7 +386,14 @@ def process_results(results: List[Dict]) -> List[Dict]:
             continue
 
     print(f"\n📊 Successfully processed {len(processed_results)} results")
-    return processed_results
+    if stats["skipped_not_relevant"] > 0:
+        print(f"   ⏭️  Filtered out {stats['skipped_not_relevant']} non-financially-relevant images")
+    if stats["kept_relevant"] > 0:
+        print(f"   ✅ Kept {stats['kept_relevant']} financially relevant images")
+    if stats["parse_errors"] > 0:
+        print(f"   ⚠️  {stats['parse_errors']} descriptions kept as-is (JSON parse errors)")
+    
+    return processed_results, stats
 
 
 def save_results(processed_results: List[Dict], job_name: str, batch_prefix: str = "image_description_batches") -> str:
@@ -507,7 +561,7 @@ def main():
                 continue
 
             # Process results
-            processed_results = process_results(results)
+            processed_results, _ = process_results(results)
 
             if not processed_results:
                 print(f"❌ No results processed for job {job_name}")

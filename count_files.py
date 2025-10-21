@@ -181,7 +181,6 @@ def main():
                 print(f"{label:30}")
                 subdirs = [
                     'image_description_batches',
-                    'filter_batches',
                     'upload_batches',
                 ]
                 for subdir in subdirs:
