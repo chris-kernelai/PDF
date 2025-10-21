@@ -198,15 +198,46 @@ def create_batch_request(
     image_base64 = encode_image_base64(str(image_path))
 
     # Default prompt for financial document image description
-    user_prompt = """Provide a terse, factual description of this image.
+    user_prompt = """
+    Provide a terse, factual description of this image as structured JSON.
 
-Report exactly what is shown:
-- Content type (chart, table, diagram, etc.)
-- All visible text, labels, and legends
-- All numerical data, values, and units
-- Axis labels and scales
+    Rules:
+    - Report only what is directly visible.
+    - Do not interpret or analyze.
+    - Use one JSON object per distinct data type present (e.g., text, table, chart, diagram, photo, etc.).
+    - Each object should contain only fields relevant to that type.
+    - Use arrays if multiple similar elements exist.
+    - Include all visible text, labels, numbers, and units.
+    - Keep keys self-explanatory and values literal.
 
-Do not interpret or analyze. State only what is directly visible. Be concise."""
+    Examples of possible objects:
+    {
+    "type": "table",
+    "headers": ["Year", "Revenue ($M)", "Growth (%)"],
+    "rows": [
+        ["2021", "50", "10"],
+        ["2022", "55", "10"],
+        ["2023", "60", "9"]
+    ]
+    }
+
+    {
+    "type": "chart",
+    "title": "Monthly Sales",
+    "x_axis": {"label": "Month", "values": ["Jan", "Feb", "Mar"]},
+    "y_axis": {"label": "Sales ($)", "values": [100, 120, 150]},
+    "series": [{"label": "Product A", "values": [100, 120, 150]}]
+    }
+
+    {
+    "type": "text",
+    "content": "Warning: Battery low (15%)",
+    "position": "top-right"
+    }
+
+    Output only valid JSON objects, separated by newlines if more than one.
+    Do not include prose or commentary.
+    """
 
     # Build request key (unique identifier)
     request_key = f"{doc_id}_page_{page_number:03d}_img_{image_index:02d}"
