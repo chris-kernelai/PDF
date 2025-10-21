@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple, Union, Set
 
 from src.docling_converter import DoclingConverter
 from src.processing_logger import ProcessingLogger
-from src.pipeline import SupabaseConfig, fetch_existing_representations
+from src.pipeline.supabase import SupabaseConfig, fetch_existing_representations
 from src.pipeline.paths import DATA_DIR, LOGS_DIR, STATE_DIR
 
 __all__ = [
@@ -404,6 +404,8 @@ class BatchDoclingConverter:
         extract_images: bool = False,
         chunk_page_limit: int = 50,
         max_docs: Optional[int] = None,
+        min_doc_id: Optional[int] = None,
+        max_doc_id: Optional[int] = None,
     ) -> None:
         self.input_folder = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -425,6 +427,8 @@ class BatchDoclingConverter:
         self.extract_images = extract_images
         self.chunk_page_limit = chunk_page_limit
         self.max_docs = max_docs
+        self.min_doc_id = min_doc_id
+        self.max_doc_id = max_doc_id
 
         self.processed_tracker_file = STATE_DIR / "processed_documents.txt"
         self.processed_doc_ids = self._load_processed_documents()
@@ -501,15 +505,30 @@ class BatchDoclingConverter:
         return await fetch_existing_representations(self.supabase_config, document_ids)
 
     def _filter_input_files(self, pdf_files: List[Path]) -> List[Path]:
-        if self.doc_type == "both":
-            return pdf_files
         filtered = []
         for pdf_file in pdf_files:
-            name_lower = pdf_file.name.lower()
-            if self.doc_type == "filings" and "filing" in name_lower:
-                filtered.append(pdf_file)
-            elif self.doc_type == "slides" and "slide" in name_lower:
-                filtered.append(pdf_file)
+            # Filter by doc type
+            if self.doc_type != "both":
+                name_lower = pdf_file.name.lower()
+                if self.doc_type == "filings" and "filing" not in name_lower:
+                    continue
+                elif self.doc_type == "slides" and "slide" not in name_lower:
+                    continue
+
+            # Filter by doc ID range
+            if self.min_doc_id is not None or self.max_doc_id is not None:
+                doc_id_str = self._extract_doc_id_from_filename(pdf_file)
+                if doc_id_str:
+                    try:
+                        doc_id = int(doc_id_str)
+                        if self.min_doc_id is not None and doc_id < self.min_doc_id:
+                            continue
+                        if self.max_doc_id is not None and doc_id > self.max_doc_id:
+                            continue
+                    except ValueError:
+                        pass  # Skip files with invalid doc IDs
+
+            filtered.append(pdf_file)
         return filtered
 
     def _get_pdf_files(self) -> List[Path]:
@@ -524,7 +543,12 @@ class BatchDoclingConverter:
                 pdf_files.append(file_path)
 
         pdf_files.sort()
-        return self._filter_input_files(pdf_files)
+        self.logger.info(f"Found {len(pdf_files)} PDF files before filtering")
+        filtered_files = self._filter_input_files(pdf_files)
+        self.logger.info(f"After filtering by doc ID range ({self.min_doc_id}-{self.max_doc_id}): {len(filtered_files)} files")
+        if filtered_files and len(filtered_files) <= 20:
+            self.logger.info(f"Files to process: {[f.name for f in filtered_files]}")
+        return filtered_files
 
     async def convert_all(self) -> Dict[str, int]:
         self.logger.info(
@@ -706,6 +730,8 @@ async def convert_folder(
     extract_images: bool = False,
     chunk_page_limit: int = 50,
     max_docs: Optional[int] = None,
+    min_doc_id: Optional[int] = None,
+    max_doc_id: Optional[int] = None,
 ) -> Dict[str, int]:
     converter = BatchDoclingConverter(
         input_folder=input_folder,
@@ -728,6 +754,8 @@ async def convert_folder(
         extract_images=extract_images,
         chunk_page_limit=chunk_page_limit,
         max_docs=max_docs,
+        min_doc_id=min_doc_id,
+        max_doc_id=max_doc_id,
     )
 
     try:

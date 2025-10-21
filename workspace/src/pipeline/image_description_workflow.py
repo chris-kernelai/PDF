@@ -18,13 +18,13 @@ from uuid import uuid4
 from google.cloud import storage
 from google.genai.types import CreateBatchJobConfig
 
-from src.pipeline import init_client, validate_environment
+from src.pipeline.gemini import init_client, validate_environment
 from src.pipeline.paths import DATA_DIR, WORKSPACE_ROOT
 from src.standalone_upload_representations import DocumentRepresentationUploader
 
 _INTEGRATOR_SPEC = importlib.util.spec_from_file_location(
     "image_description_integrator",
-    Path(__file__).resolve().parents[2] / "5_integrate_descriptions.py",
+    Path(__file__).resolve().parents[2] / "scripts" / "legacy_pipeline" / "5_integrate_descriptions.py",
 )
 if _INTEGRATOR_SPEC is None or _INTEGRATOR_SPEC.loader is None:
     raise RuntimeError("Unable to load ImageDescriptionIntegrator module")
