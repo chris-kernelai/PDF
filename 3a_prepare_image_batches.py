@@ -209,6 +209,7 @@ def create_batch_request(
     - Use arrays if multiple similar elements exist.
     - Include all visible text, labels, numbers, and units.
     - Keep keys self-explanatory and values literal.
+    - Give units in the description if visible.
 
     Examples of possible objects:
     {
