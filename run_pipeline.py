@@ -6,10 +6,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from dotenv import load_dotenv
 
@@ -28,11 +29,19 @@ from src.pipeline import (
     DocumentFetcher,
     ImageDescriptionWorkflow,
     SupabaseConfig,
+    UploadSummary,
     fetch_existing_representations,
 )
 from src.pipeline.docling_batch_converter import convert_folder
 from src.pipeline.image_extraction import extract_images_from_pdf
-from src.pipeline.paths import CONFIGS_DIR, DATA_DIR, LOGS_DIR, STATE_DIR, WORKSPACE_ROOT as PATH_WORKSPACE_ROOT
+from src.pipeline.paths import (
+    CONFIGS_DIR,
+    DATA_DIR,
+    LOGS_DIR,
+    STATE_DIR,
+    WORKSPACE_ROOT as PATH_WORKSPACE_ROOT,
+)
+from src.standalone_upload_representations import DocumentRepresentationUploader
 
 load_dotenv()
 
@@ -132,6 +141,7 @@ async def run_full(args: argparse.Namespace) -> None:
         gcs_output_prefix=args.gcs_output_prefix,
         batch_prefix=args.batch_prefix,
         image_format=args.image_format,
+        aws_profile=getattr(args, "aws_profile", None),
     )
 
     upload_summary = await workflow.run(
@@ -176,6 +186,83 @@ async def run_markdown_only(args: argparse.Namespace) -> None:
     )
     logger.info("Markdown conversion complete: %s", stats)
     print(f"DEBUG: Markdown conversion stats: {stats}", file=sys.stderr)
+
+    if getattr(args, "upload_docling", False):
+        doc_ids = stats.get("doc_ids_processed", [])
+        upload_summary = await upload_docling_markdown(
+            doc_ids,
+            args.output_folder,
+            aws_profile=getattr(args, "aws_profile", None),
+        )
+        logger.info(
+            "Docling upload summary: uploaded=%s skipped=%s failed=%s",
+            upload_summary.uploaded,
+            upload_summary.skipped,
+            upload_summary.failed,
+        )
+        for error in upload_summary.errors:
+            logger.error("Docling upload error: %s", error)
+
+
+async def upload_docling_markdown(
+    doc_ids: Iterable[int],
+    output_folder: Path,
+    *,
+    aws_profile: str | None = None,
+) -> UploadSummary:
+    logger = logging.getLogger("pipeline.markdown")
+    doc_ids_set = {
+        int(doc_id) for doc_id in doc_ids if isinstance(doc_id, int)
+    }
+
+    summary = UploadSummary()
+
+    if not doc_ids_set:
+        logger.info("No document IDs available for Docling upload")
+        return summary
+
+    uploader = DocumentRepresentationUploader(aws_profile=aws_profile)
+    await uploader.initialize()
+
+    try:
+        existing = await uploader.get_existing_representations(list(doc_ids_set))
+
+        for doc_id in sorted(doc_ids_set):
+            docling_path = output_folder / f"doc_{doc_id}.md"
+            if not docling_path.exists():
+                docling_path = output_folder / f"{doc_id}.md"
+
+            if not docling_path.exists():
+                logger.warning(
+                    "Docling markdown missing for doc_%s; skipping upload",
+                    doc_id,
+                )
+                summary.skipped += 1
+                continue
+
+            reps = existing.get(doc_id, set())
+            if "DOCLING" in reps:
+                summary.skipped += 1
+                continue
+
+            result = await uploader.upload_representations(
+                document_id=doc_id,
+                docling_file=str(docling_path),
+                docling_img_file=None,
+                docling_filename=f"doc_{doc_id}.txt",
+                docling_img_filename=None,
+            )
+
+            if result["errors"]:
+                summary.failed += 1
+                summary.errors.extend(result["errors"])
+            else:
+                summary.uploaded += 1
+
+    finally:
+        await uploader.close()
+
+    return summary
 
 
 def _parse_doc_id_from_path(pdf_path: Path) -> int | None:
@@ -267,6 +354,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
     downloader = DoclingMarkdownDownloader(
         output_dir=output_dir,
         supabase_config=supabase_config,
+        aws_profile=getattr(args, "aws_profile", None),
     )
     download_summary = await downloader.download(eligible_docs)
     logger.info(
@@ -339,6 +427,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
         gcs_output_prefix=args.gcs_output_prefix,
         batch_prefix=args.batch_prefix,
         image_format=args.image_format,
+        aws_profile=getattr(args, "aws_profile", None),
     )
 
     upload_summary = await workflow.run(
@@ -360,6 +449,12 @@ async def run_images_only(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Kernel PDF pipeline runner")
+    parser.add_argument(
+        "--aws-profile",
+        type=str,
+        default=None,
+        help="AWS profile name to use for S3 interactions",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     full_parser = subparsers.add_parser("full", help="Run fetch + markdown conversion pipeline")
@@ -404,6 +499,11 @@ def build_parser() -> argparse.ArgumentParser:
     markdown_parser.add_argument("--max-docs", type=int, default=None)
     markdown_parser.add_argument("--cpu", action="store_true", help="Force CPU mode")
     markdown_parser.add_argument("--extract-images", action="store_true", help="Extract images during conversion")
+    markdown_parser.add_argument(
+        "--upload-docling",
+        action="store_true",
+        help="Upload Docling markdown representations after conversion",
+    )
 
     images_parser = subparsers.add_parser(
         "images",
@@ -531,6 +631,13 @@ async def async_main() -> int:
         args = parser.parse_args()
         print(f"DEBUG: Parsed args: {args}", file=sys.stderr)
         print(f"DEBUG: Command: {args.command}", file=sys.stderr)
+
+        if getattr(args, "aws_profile", None):
+            os.environ["AWS_PROFILE"] = args.aws_profile
+            print(
+                f"DEBUG: AWS_PROFILE set to {args.aws_profile}",
+                file=sys.stderr,
+            )
 
         command_map: dict[str, Callable[[argparse.Namespace], Awaitable[None]]] = {
             "full": run_full,

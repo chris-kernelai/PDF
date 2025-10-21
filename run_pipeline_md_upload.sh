@@ -44,6 +44,6 @@ CMD=("$PYTHON_CMD" "$SCRIPT_DIR/run_pipeline.py")
 if [ -n "$PROFILE" ]; then
     CMD+=("--aws-profile" "$PROFILE")
 fi
-CMD+=("markdown" "$@")
+CMD+=("markdown" "--upload-docling" "$@")
 
 exec "${CMD[@]}"

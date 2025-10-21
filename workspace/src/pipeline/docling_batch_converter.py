@@ -457,6 +457,7 @@ class BatchDoclingConverter:
         self.proc_logger = ProcessingLogger()
         self.supabase_config = SupabaseConfig.from_env()
         self.existing_representations: Dict[int, Set[str]] = {}
+        self.session_doc_ids: Set[int] = set()
 
     def _load_processed_documents(self) -> Set[str]:
         if not self.processed_tracker_file.exists():
@@ -494,6 +495,10 @@ class BatchDoclingConverter:
         if not doc_id_str:
             return
         self.processed_doc_ids.add(doc_id_str)
+        try:
+            self.session_doc_ids.add(int(doc_id_str))
+        except ValueError:
+            pass
         with open(self.processed_tracker_file, "a", encoding="utf-8") as fh:
             fh.write(f"{doc_id_str}\n")
 
@@ -634,6 +639,8 @@ class BatchDoclingConverter:
                     self.stats["removed_files"] += 1
                 except OSError as exc:
                     self.logger.warning("Failed to delete %s: %s", input_path.name, exc)
+
+        self.stats["doc_ids_processed"] = sorted(self.session_doc_ids)
 
         return self.stats
 

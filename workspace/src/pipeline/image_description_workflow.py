@@ -188,6 +188,7 @@ class ImageDescriptionWorkflow:
         gcs_output_prefix: str = "gemini_batches/output",
         batch_prefix: str = "image_description_batches",
         image_format: str = "detailed",
+        aws_profile: Optional[str] = None,
     ) -> None:
         self.images_dir = images_dir
         self.processed_markdown_dir = processed_markdown_dir
@@ -198,6 +199,7 @@ class ImageDescriptionWorkflow:
         self.gcs_output_prefix = gcs_output_prefix
         self.batch_prefix = batch_prefix
         self.image_format = image_format
+        self.aws_profile = aws_profile
 
     async def run(
         self,
@@ -599,7 +601,7 @@ class ImageDescriptionWorkflow:
             logger.warning("No document IDs available for upload")
             return UploadSummary()
 
-        uploader = DocumentRepresentationUploader()
+        uploader = DocumentRepresentationUploader(aws_profile=self.aws_profile)
         await uploader.initialize()
         summary = UploadSummary()
 

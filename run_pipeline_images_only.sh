@@ -3,13 +3,34 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./run_pipeline_images_only.sh <min_doc_id> <max_doc_id> [batch_size] [-- extra run_pipeline.py args]
+Usage: ./run_pipeline_images_only.sh [--profile <aws_profile>] <min_doc_id> <max_doc_id> [batch_size] [-- extra run_pipeline.py args]
 
 Examples:
   ./run_pipeline_images_only.sh 27000 27199
-  ./run_pipeline_images_only.sh 27000 27199 50 -- --image-batch-size 75
+  ./run_pipeline_images_only.sh --profile local 27000 27199 50 -- --image-batch-size 75
 EOF
 }
+
+PROFILE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --profile requires a value" >&2
+                exit 1
+            fi
+            PROFILE="$2"
+            shift 2
+            ;;
+        --profile=*)
+            PROFILE="${1#*=}"
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 if [ $# -lt 2 ]; then
     usage
@@ -28,6 +49,10 @@ fi
 if [ -z "$PYTHON_CMD" ]; then
     echo "Error: No Python interpreter found. Install python3 or create workspace/venv." >&2
     exit 1
+fi
+
+if [ -n "$PROFILE" ]; then
+    export AWS_PROFILE="$PROFILE"
 fi
 
 MIN_DOC_ID=$1
@@ -74,7 +99,11 @@ batch=1
 while [ $index -lt $total ]; do
     chunk=("${PDFS[@]:index:BATCH_SIZE}")
     echo "Processing ${#chunk[@]} PDFs (batch $batch)"
-    cmd=("$PYTHON_CMD" "$SCRIPT_DIR/run_pipeline.py" images)
+    cmd=("$PYTHON_CMD" "$SCRIPT_DIR/run_pipeline.py")
+    if [ -n "$PROFILE" ]; then
+        cmd+=("--aws-profile" "$PROFILE")
+    fi
+    cmd+=("images")
     cmd+=("${EXTRA_ARGS[@]}")
     for pdf in "${chunk[@]}"; do
         cmd+=("--pdf" "$pdf")

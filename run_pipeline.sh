@@ -1,8 +1,32 @@
 #!/bin/bash
 set -euo pipefail
 
+PROFILE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --profile requires a value" >&2
+                exit 1
+            fi
+            PROFILE="$2"
+            shift 2
+            ;;
+        --profile=*)
+            PROFILE="${1#*=}"
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
 echo "======================================" >&2
 echo "DEBUG: run_pipeline.sh starting" >&2
+if [ -n "$PROFILE" ]; then
+    echo "DEBUG: AWS profile override: $PROFILE" >&2
+fi
 echo "DEBUG: Arguments: $@" >&2
 echo "======================================" >&2
 
@@ -25,8 +49,18 @@ if [ -z "$PYTHON_CMD" ]; then
     exit 1
 fi
 
+if [ -n "$PROFILE" ]; then
+    export AWS_PROFILE="$PROFILE"
+fi
+
 echo "DEBUG: Python version:" >&2
 "$PYTHON_CMD" --version >&2
 
-echo "DEBUG: Executing: $PYTHON_CMD $SCRIPT_DIR/run_pipeline.py full $@" >&2
-exec "$PYTHON_CMD" "$SCRIPT_DIR/run_pipeline.py" full "$@"
+CMD=("$PYTHON_CMD" "$SCRIPT_DIR/run_pipeline.py")
+if [ -n "$PROFILE" ]; then
+    CMD+=("--aws-profile" "$PROFILE")
+fi
+CMD+=("full" "$@")
+
+echo "DEBUG: Executing: ${CMD[*]}" >&2
+exec "${CMD[@]}"
