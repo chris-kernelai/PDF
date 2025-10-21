@@ -1,0 +1,7 @@
+timestamp,doc_id,stage,batch_uuid,pages,images_extracted,images_sent_to_batch,images_downloaded,images_filtered_in,images_filtered_out,images_integrated,duration_seconds,status,notes
+2025-10-21T12:35:16.070249,doc_27335,conversion,,19,,,,,,,45.80,success,
+2025-10-21T12:35:28.922575,doc_27336,conversion,,6,,,,,,,12.83,success,
+2025-10-21T12:35:44.537222,doc_27290,conversion,,47,,,,,,,74.04,success,
+2025-10-21T12:36:31.685779,doc_27338,conversion,,19,,,,,,,47.04,success,
+2025-10-21T12:37:19.508687,doc_27337,conversion,,55,,,,,,,109.93,success,
+2025-10-21T12:38:31.695829,doc_27339,conversion,,78,,,,,,,118.40,success,

@@ -135,6 +135,7 @@ def _process_single_pdf_worker(
     add_page_numbers: bool,
     chunk_page_limit: int,
     batch_size: int = 2,
+    images_only: bool = False,
 ) -> Tuple[str, str, bool, str, int, int, float]:
     """
     Worker function for converting a single PDF in a separate process.
@@ -211,6 +212,55 @@ def _process_single_pdf_worker(
     except Exception as e:
         # If file type detection fails, try to proceed as PDF anyway
         pass
+
+    # If images_only mode and output markdown already exists, skip conversion and only extract images
+    if images_only and Path(output_path).exists():
+        import time
+        start_time = time.time()
+        
+        try:
+            import fitz  # PyMuPDF
+            pdf_doc = fitz.open(pdf_file_path)
+            
+            # Extract document ID
+            doc_id = Path(pdf_file_path).stem
+            if doc_id.startswith('doc_'):
+                doc_id = doc_id[4:]
+            
+            # Create output directory for images
+            images_dir = Path(images_output_dir) / f"doc_{doc_id}"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            
+            image_count = 0
+            
+            # Extract images from each page
+            for page_num, page in enumerate(pdf_doc, start=1):
+                image_list = page.get_images()
+                
+                for img_index, img in enumerate(image_list, start=1):
+                    xref = img[0]
+                    base_image = pdf_doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    
+                    # Save image with same naming convention as Docling
+                    img_filename = f"page_{page_num:03d}_img_{img_index:02d}.{image_ext}"
+                    img_path = images_dir / img_filename
+                    
+                    with open(img_path, "wb") as img_file:
+                        img_file.write(image_bytes)
+                    
+                    image_count += 1
+            
+            page_count = len(pdf_doc)
+            pdf_doc.close()
+            processing_time = time.time() - start_time
+            
+            return (pdf_file_path, output_path, True, "", image_count, page_count, processing_time)
+            
+        except Exception as e:
+            error_msg = f"Image extraction failed: {str(e)}"
+            return (pdf_file_path, output_path, False, error_msg, 0, 0, 0.0)
 
     # Import GPU memory manager for retry logic
     from src.gpu_memory_manager import (
@@ -873,15 +923,19 @@ class BatchDoclingConverter:
         """
         output_path = self._get_output_path(pdf_file)
 
-        # Check if already processed
-        if self._is_already_processed(pdf_file):
+        # Check if already processed (unless we're only extracting images)
+        if self._is_already_processed(pdf_file) and not self.extract_images:
             self.logger.info("Skipping %s - already processed", pdf_file.name)
             return pdf_file, output_path, True, "Skipped - already processed", 0, 0, 0.0
+        elif self._is_already_processed(pdf_file) and self.extract_images:
+            self.logger.info("Already processed %s, but extracting images anyway", pdf_file.name)
 
-        # Skip if output file already exists
-        if output_path.exists():
+        # Skip if output file already exists (unless we're only extracting images)
+        if output_path.exists() and not self.extract_images:
             self.logger.info("Skipping %s - output already exists", pdf_file.name)
             return pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0
+        elif output_path.exists() and self.extract_images:
+            self.logger.info("Output exists for %s, but extracting images anyway", pdf_file.name)
 
         # Prepare paths for worker
         raw_output_path = output_path.parent.parent / 'data' / 'processed_raw' / output_path.name
@@ -901,6 +955,7 @@ class BatchDoclingConverter:
             add_page_numbers=self.add_page_numbers,
             chunk_page_limit=self.chunk_page_limit,
             batch_size=self.batch_size,
+            images_only=self.extract_images and output_path.exists(),
         )
 
         # Unpack result
@@ -945,12 +1000,16 @@ class BatchDoclingConverter:
             raw_output_path = output_path.parent.parent / 'data' / 'processed_raw' / output_path.name
 
             # Skip if already processed or exists
-            if self._is_already_processed(pdf_file):
+            # Check if already processed (unless we're only extracting images)
+            if self._is_already_processed(pdf_file) and not self.extract_images:
                 self.logger.info("Skipping %s - already processed", pdf_file.name)
                 results.append((pdf_file, output_path, True, "Skipped - already processed", 0, 0, 0.0))
                 continue
+            elif self._is_already_processed(pdf_file) and self.extract_images:
+                self.logger.info("Already processed %s, but extracting images anyway", pdf_file.name)
 
-            if output_path.exists():
+            # Skip if output file already exists (unless we're only extracting images)
+            if output_path.exists() and not self.extract_images:
                 self.logger.info("Skipping %s - output already exists", pdf_file.name)
                 # Delete the PDF since output already exists
                 if self.remove_processed and pdf_file.exists():
@@ -962,6 +1021,8 @@ class BatchDoclingConverter:
                         self.logger.warning("Failed to delete skipped file %s: %s", pdf_file.name, e)
                 results.append((pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0))
                 continue
+            elif output_path.exists() and self.extract_images:
+                self.logger.info("Output exists for %s, but extracting images anyway", pdf_file.name)
 
             # Process directly without worker process overhead
             try:
@@ -978,6 +1039,7 @@ class BatchDoclingConverter:
                     self.add_page_numbers,
                     self.chunk_page_limit,
                     self.batch_size,
+                    images_only=self.extract_images and output_path.exists(),
                 )
 
                 input_path_str, output_path_str, success, error_msg, image_count, page_count, processing_time = result
@@ -1064,12 +1126,16 @@ class BatchDoclingConverter:
                 raw_output_path = output_path.parent.parent / 'data' / 'processed_raw' / output_path.name
 
                 # Skip if already processed or exists
-                if self._is_already_processed(pdf_file):
+                # Check if already processed (unless we're only extracting images)
+                if self._is_already_processed(pdf_file) and not self.extract_images:
                     self.logger.info("Skipping %s - already processed", pdf_file.name)
                     results.append((pdf_file, output_path, True, "Skipped - already processed", 0, 0, 0.0))
                     continue
+                elif self._is_already_processed(pdf_file) and self.extract_images:
+                    self.logger.info("Already processed %s, but extracting images anyway", pdf_file.name)
 
-                if output_path.exists():
+                # Skip if output file already exists (unless we're only extracting images)
+                if output_path.exists() and not self.extract_images:
                     self.logger.info("Skipping %s - output already exists", pdf_file.name)
                     # Delete the PDF since output already exists
                     if self.remove_processed and pdf_file.exists():
@@ -1081,6 +1147,8 @@ class BatchDoclingConverter:
                             self.logger.warning("Failed to delete skipped file %s: %s", pdf_file.name, e)
                     results.append((pdf_file, output_path, True, "Skipped - output already exists", 0, 0, 0.0))
                     continue
+                elif output_path.exists() and self.extract_images:
+                    self.logger.info("Output exists for %s, but extracting images anyway", pdf_file.name)
 
                 # Submit job to executor
                 future = executor.submit(

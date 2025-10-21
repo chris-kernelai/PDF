@@ -1022,19 +1022,18 @@ class DocumentFetcher:
         finally:
             conn.close()
 
-        # Step 3: Add to metadata database (skip those already processed)
+        # Step 3: Add to metadata database and prepare for download
         self.logger.info("Adding documents to metadata database...")
+        docs_to_process = []  # Track ALL documents to process in this batch
+        
         for doc in documents:
             document_id = doc.get("id")
             company_id = doc.get("company_id")
 
-            # Skip if already successfully converted (in processing log)
-            if str(document_id) in self.completed_doc_ids:
-                self.stats["documents_skipped"] += 1
-                self.stats["documents_skipped_completed"] += 1
-                continue
-
-            # Add to metadata
+            # In run-all-images mode, we want to process documents even if they're
+            # in the metadata DB or processing log, since Supabase says they need DOCLING_IMG
+            
+            # Add to metadata (or update if exists)
             added = self.metadata.add_document(
                 document_id=document_id,
                 company_id=company_id,
@@ -1049,17 +1048,27 @@ class DocumentFetcher:
 
             if added:
                 self.stats["documents_added"] += 1
-            else:
-                self.stats["documents_skipped"] += 1
+            
+            # Track this document for processing regardless of whether it was newly added
+            docs_to_process.append(document_id)
 
         self.logger.info(
-            f"Added {self.stats['documents_added']} new documents, skipped {self.stats['documents_skipped']}"
+            f"Added {self.stats['documents_added']} new documents to metadata, will process {len(docs_to_process)} documents in this batch"
         )
 
-        # Step 4: Download PDFs
-        if download_pdfs:
-            pending = self.metadata.get_pending_downloads()
-            self.logger.info(f"Downloading {len(pending)} pending PDFs...")
+        # Step 4: Download PDFs for all documents in this batch
+        if download_pdfs and docs_to_process:
+            # Get pending downloads filtered to this batch
+            all_pending = self.metadata.get_pending_downloads()
+            pending = [doc for doc in all_pending if doc['document_id'] in docs_to_process]
+            
+            # If no pending downloads found but we have docs to process, force download
+            if not pending and docs_to_process:
+                self.logger.info(f"No pending downloads found in metadata, fetching all {len(docs_to_process)} documents...")
+                # Create pending list from our documents
+                pending = [{'document_id': doc_id} for doc_id in docs_to_process]
+            
+            self.logger.info(f"Downloading {len(pending)} PDFs for this batch...")
 
             if pending:
                 async with aiohttp.ClientSession() as session:

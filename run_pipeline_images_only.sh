@@ -90,6 +90,12 @@ log() {
     echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
 
+# Activate virtual environment if it exists
+if [ -d "venv" ]; then
+    source venv/bin/activate
+    log "✅ Activated Python virtual environment"
+fi
+
 error() {
     echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" >&2
 }
@@ -194,8 +200,20 @@ while true; do
     info "Downloaded $PDFS_IN_BATCH PDFs in this batch"
     echo ""
     
-    # Step 2: Extract images from PDFs (skip markdown conversion since we already have DOCLING)
-    log "STEP 2: Extracting images from PDFs"
+    # Step 2: Download existing DOCLING markdowns from S3
+    log "STEP 2: Downloading existing DOCLING markdowns from S3"
+    python3 download_docling_markdowns.py --from-to-process
+    
+    if [ $? -ne 0 ]; then
+        error "Markdown download failed for batch $BATCH_NUM"
+        exit 1
+    fi
+    
+    log "✓ Markdown download complete for batch $BATCH_NUM"
+    echo ""
+    
+    # Step 3: Extract images from PDFs
+    log "STEP 3: Extracting images from PDFs"
     
     GPU_FLAG=""
     [ "$CPU_MODE" = true ] && GPU_FLAG="--no-gpu"
@@ -218,8 +236,8 @@ while true; do
     log "✓ Image extraction complete for batch $BATCH_NUM"
     echo ""
     
-    # Step 3: Image Description Pipeline
-    log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
+    # Step 4: Image Description Pipeline
+    log "STEP 4: Running image description pipeline (batch $BATCH_NUM)"
     
     # Generate unique session ID for this pipeline run
     PIPELINE_SESSION_ID=$(python3 -c "import uuid; print(str(uuid.uuid4())[:8])")
@@ -278,8 +296,8 @@ while true; do
     log "✓ Image description pipeline complete for batch $BATCH_NUM"
     echo ""
     
-    # Step 4: Integrate descriptions
-    log "STEP 4: Integrating image descriptions (batch $BATCH_NUM)"
+    # Step 5: Integrate descriptions
+    log "STEP 5: Integrating image descriptions (batch $BATCH_NUM)"
     python3 5_integrate_descriptions.py
     
     if [ $? -ne 0 ]; then
@@ -294,8 +312,8 @@ while true; do
     SESSION_END_TIME=$(date '+%Y-%m-%d %H:%M:%S')
     echo "$SESSION_END_TIME | Session: $PIPELINE_SESSION_ID | Batch: $BATCH_NUM | Status: COMPLETED" >> "$SESSION_LOG_FILE"
     
-    # Step 5: Upload DOCLING_IMG to S3 and Supabase
-    log "STEP 5: Uploading DOCLING_IMG to S3 and Supabase (batch $BATCH_NUM)"
+    # Step 6: Upload DOCLING_IMG to S3 and Supabase
+    log "STEP 6: Uploading DOCLING_IMG to S3 and Supabase (batch $BATCH_NUM)"
     python3 5a_upload.py
     
     if [ $? -ne 0 ]; then
@@ -306,8 +324,8 @@ while true; do
     log "✓ Upload complete for batch $BATCH_NUM"
     echo ""
     
-    # Step 6: Cleanup
-    log "STEP 6: Cleaning up batch $BATCH_NUM"
+    # Step 7: Cleanup
+    log "STEP 7: Cleaning up batch $BATCH_NUM"
     
     # Delete .generated directory
     if [ -d ".generated" ]; then
