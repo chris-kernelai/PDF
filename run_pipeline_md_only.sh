@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROFILE=""
+POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile)
@@ -16,11 +17,19 @@ while [[ $# -gt 0 ]]; do
             PROFILE="${1#*=}"
             shift
             ;;
-        *)
+        --)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            POSITIONAL_ARGS+=("$@")
             break
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
             ;;
     esac
 done
+
+set -- "${POSITIONAL_ARGS[@]}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PY="$SCRIPT_DIR/workspace/venv/bin/python"

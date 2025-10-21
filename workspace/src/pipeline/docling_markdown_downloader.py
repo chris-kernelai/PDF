@@ -13,7 +13,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List
 
 import aioboto3
 import asyncpg
@@ -69,20 +69,18 @@ class DoclingMarkdownDownloader:
             )
 
     async def _fetch_docling_locations(
-        self, conn: asyncpg.Connection, doc_ids: Sequence[int]
+        self, conn: asyncpg.Connection
     ) -> Dict[int, str]:
-        if not doc_ids:
-            return {}
-
         query = """
             SELECT kdocument_id, s3_key
             FROM librarian.document_locations_v2
-            WHERE kdocument_id = ANY($1)
-              AND representation_type::text = 'DOCLING'
+            WHERE representation_type::text = 'DOCLING'
         """
 
-        rows = await conn.fetch(query, list(doc_ids))
-        return {int(row["kdocument_id"]): row["s3_key"] for row in rows}
+        rows = await conn.fetch(query)
+        locations = {int(row["kdocument_id"]): row["s3_key"] for row in rows}
+        logger.info("Fetched %s DOCLING entries from Supabase", len(locations))
+        return locations
 
     async def _download_single(
         self,
@@ -124,7 +122,7 @@ class DoclingMarkdownDownloader:
         try:
             async with session.client("s3") as s3_client:
                 async with pool.acquire() as conn:
-                    locations = await self._fetch_docling_locations(conn, doc_ids_list)
+                    locations = await self._fetch_docling_locations(conn)
 
                 tasks: List[asyncio.Task[None]] = []
                 for doc_id in doc_ids_list:

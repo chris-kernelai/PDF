@@ -33,7 +33,10 @@ from src.pipeline import (
     fetch_existing_representations,
 )
 from src.pipeline.docling_batch_converter import convert_folder
-from src.pipeline.image_extraction import extract_images_from_pdf
+try:
+    from src.pipeline.image_extraction import extract_images_from_pdf
+except ImportError:  # pragma: no cover - optional dependency
+    extract_images_from_pdf = None
 from src.pipeline.paths import (
     CONFIGS_DIR,
     DATA_DIR,
@@ -315,7 +318,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
     logger.info("Evaluating %s documents for images-only processing", len(doc_ids))
 
     supabase_config = SupabaseConfig.from_env()
-    existing = await fetch_existing_representations(supabase_config, doc_ids)
+    existing = await fetch_existing_representations(supabase_config)
 
     eligible_docs: list[int] = []
     skipped_missing_docling: list[int] = []

@@ -230,6 +230,7 @@ case "$COMMAND" in
             "run_pipeline.sh"
             "run_pipeline_md_only.sh"
             "run_pipeline_images_only.sh"
+            "run_pipeline_md_upload.sh"
         )
 
         for file in "${FILES_TO_COPY[@]}"; do

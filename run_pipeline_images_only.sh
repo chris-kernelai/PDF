@@ -12,6 +12,7 @@ EOF
 }
 
 PROFILE=""
+POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile)
@@ -26,11 +27,19 @@ while [[ $# -gt 0 ]]; do
             PROFILE="${1#*=}"
             shift
             ;;
-        *)
+        --)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            POSITIONAL_ARGS+=("$@")
             break
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
             ;;
     esac
 done
+
+set -- "${POSITIONAL_ARGS[@]}"
 
 if [ $# -lt 2 ]; then
     usage
@@ -80,18 +89,33 @@ EXTRA_ARGS=("$@")
 
 PDF_DIR="$SCRIPT_DIR/workspace/data/to_process"
 
-PDFS=()
-for doc_id in $(seq "$MIN_DOC_ID" "$MAX_DOC_ID"); do
-    pdf_path="$PDF_DIR/doc_${doc_id}.pdf"
-    if [ -f "$pdf_path" ]; then
-        PDFS+=("$pdf_path")
+shopt -s nullglob
+PDFS=("$PDF_DIR"/doc_*.pdf)
+shopt -u nullglob
+
+FILTERED_PDFS=()
+for pdf_path in "${PDFS[@]}"; do
+    filename="$(basename "$pdf_path")"
+    doc_id="${filename#doc_}"
+    doc_id="${doc_id%.pdf}"
+    if [[ "$doc_id" =~ ^[0-9]+$ ]] && [ "$doc_id" -ge "$MIN_DOC_ID" ] && [ "$doc_id" -le "$MAX_DOC_ID" ]; then
+        FILTERED_PDFS+=("$pdf_path")
     fi
 done
+
+if [ ${#FILTERED_PDFS[@]} -gt 0 ]; then
+    IFS=$'\n' FILTERED_PDFS=($(printf '%s\n' "${FILTERED_PDFS[@]}" | sort -t_ -k2,2n))
+    unset IFS
+fi
+
+PDFS=("${FILTERED_PDFS[@]}")
 
 if [ ${#PDFS[@]} -eq 0 ]; then
     echo "No PDFs found in range $MIN_DOC_ID-$MAX_DOC_ID under $PDF_DIR" >&2
     exit 0
 fi
+
+echo "Found ${#PDFS[@]} PDFs to process" >&2
 
 total=${#PDFS[@]}
 index=0
