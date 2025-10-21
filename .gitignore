@@ -54,3 +54,4 @@ venv-mcp/
 *.json
 *.txt
 *.pem
+workspace/.generated/**/*

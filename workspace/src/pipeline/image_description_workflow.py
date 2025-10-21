@@ -166,11 +166,20 @@ Rules:
     return batch_request
 
 
-def _parse_image_filename(filename: str) -> Optional[tuple[int, int]]:
-    match = re.match(r"page_(\d+)_img_(\d+)\.png$", filename)
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2))
+def _parse_image_filename(filename: str, fallback_index: int) -> tuple[int, int]:
+    page_match = re.search(r"page_(\d+)", filename)
+    img_match = re.search(r"img_(\d+)", filename)
+    figure_match = re.search(r"figure_(\d+)", filename)
+
+    page_num = int(page_match.group(1)) if page_match else 0
+    if img_match:
+        image_idx = int(img_match.group(1))
+    elif figure_match:
+        image_idx = int(figure_match.group(1))
+    else:
+        image_idx = fallback_index
+
+    return page_num, image_idx
 
 
 class ImageDescriptionWorkflow:
@@ -210,17 +219,25 @@ class ImageDescriptionWorkflow:
         wait_seconds: int = 120,
         max_retries: int = 60,
         upload: bool = True,
+        allowed_doc_ids: Optional[Iterable[int]] = None,
     ) -> UploadSummary:
         """Run the entire workflow. Returns upload summary."""
         validate_environment()
         session_id = session_id or uuid4().hex[:8]
         logger.info("Starting image description workflow (session=%s)", session_id)
 
+        allowed_doc_names = (
+            {f"doc_{int(doc_id)}" for doc_id in allowed_doc_ids}
+            if allowed_doc_ids is not None
+            else None
+        )
+
         prep_result = await asyncio.to_thread(
             self._prepare_batches,
             session_id,
             batch_size,
             system_instruction,
+            allowed_doc_names,
         )
 
         if not prep_result.batch_files:
@@ -267,6 +284,7 @@ class ImageDescriptionWorkflow:
         session_id: str,
         batch_size: int,
         system_instruction: Optional[str],
+        allowed_doc_names: Optional[Set[str]],
     ) -> BatchPreparationResult:
         images_dir = self.images_dir
         processed_dir = self.processed_markdown_dir
@@ -280,6 +298,8 @@ class ImageDescriptionWorkflow:
         doc_folders = [
             d for d in images_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
         ]
+        if allowed_doc_names is not None:
+            doc_folders = [d for d in doc_folders if d.name in allowed_doc_names]
         if not doc_folders:
             logger.warning("No document folders found in %s", images_dir)
             return BatchPreparationResult(
@@ -322,12 +342,8 @@ class ImageDescriptionWorkflow:
         for folder in sorted(valid_folders):
             doc_name = folder.name
             image_files = sorted(folder.glob("*.png"))
-            for image_file in image_files:
-                parsed = _parse_image_filename(image_file.name)
-                if parsed is None:
-                    logger.debug("Skipping invalid image filename: %s", image_file.name)
-                    continue
-                page_num, image_idx = parsed
+            for idx, image_file in enumerate(image_files, start=1):
+                page_num, image_idx = _parse_image_filename(image_file.name, idx)
                 request = _create_batch_request(
                     image_file,
                     doc_name,
@@ -338,7 +354,16 @@ class ImageDescriptionWorkflow:
                 all_requests.append(request)
 
         if not all_requests:
-            raise RuntimeError("No images found to prepare batches")
+            logger.warning("No images found for batch preparation")
+            return BatchPreparationResult(
+                session_id,
+                [],
+                batches_dir,
+                batches_dir / "batch_metadata.json",
+                doc_ids,
+                0,
+                len(valid_folders),
+            )
 
         batch_files: List[Path] = []
         for i in range(0, len(all_requests), batch_size):

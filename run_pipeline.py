@@ -11,6 +11,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -30,13 +31,9 @@ from src.pipeline import (
     ImageDescriptionWorkflow,
     SupabaseConfig,
     UploadSummary,
-    fetch_existing_representations,
 )
 from src.pipeline.docling_batch_converter import convert_folder
-try:
-    from src.pipeline.image_extraction import extract_images_from_pdf
-except ImportError:  # pragma: no cover - optional dependency
-    extract_images_from_pdf = None
+from src.pipeline.image_extraction import extract_images_from_pdf
 from src.pipeline.paths import (
     CONFIGS_DIR,
     DATA_DIR,
@@ -316,8 +313,17 @@ def _discover_existing_markdown_doc_ids(
     return ordered
 
 
-def _parse_doc_id_from_path(pdf_path: Path) -> int | None:
-    stem = pdf_path.stem
+def _directory_has_images(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+        if any(path.glob(pattern)):
+            return True
+    return False
+
+
+def _doc_id_from_filename(path: Path) -> int | None:
+    stem = path.stem
     if stem.startswith("doc_"):
         stem = stem[4:]
     try:
@@ -333,73 +339,87 @@ async def run_images_only(args: argparse.Namespace) -> None:
     _ensure_data_dirs()
 
     output_dir = args.output_folder
-    images_dir = args.images_dir
+    images_base_dir = args.images_dir
     enhanced_dir = args.enhanced_dir
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    images_dir.mkdir(parents=True, exist_ok=True)
+    images_base_dir.mkdir(parents=True, exist_ok=True)
     enhanced_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.pdf:
-        logger.error("Images-only mode requires at least one --pdf argument")
+    supabase_config = SupabaseConfig.from_env()
+
+    logger.info(
+        "Fetching doc IDs missing DOCLING_IMG (range %s-%s, limit=%s)",
+        args.min_doc_id,
+        args.max_doc_id,
+        args.limit,
+    )
+
+    fetcher = DocumentFetcher(
+        config_path=args.config,
+        limit=args.limit,
+        min_doc_id=args.min_doc_id,
+        max_doc_id=args.max_doc_id,
+        run_all_images=True,
+        download_pdfs=not args.skip_pdf_download,
+    )
+    fetch_stats = await fetcher.run()
+    logger.info("Fetcher stats: %s", fetch_stats)
+
+    if args.skip_pdf_download:
+        pdf_dir = Path(args.input_folder)
+    elif hasattr(fetcher, "input_folder"):
+        pdf_dir = getattr(fetcher, "input_folder")
+    else:
+        pdf_dir = Path(args.input_folder)
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+
+    doc_ids: list[int]
+    if hasattr(fetcher, "last_selected_docs"):
+        last_docs = getattr(fetcher, "last_selected_docs", [])
+        doc_ids = sorted({doc["id"] for doc in last_docs})
+    else:
+        logger.warning(
+            "DocumentFetcher missing last_selected_docs; inferring doc IDs from %s",
+            pdf_dir,
+        )
+        inferred: set[int] = set()
+        for pdf_path in pdf_dir.glob("doc_*.pdf"):
+            doc_id = _doc_id_from_filename(pdf_path)
+            if doc_id is None:
+                continue
+            if doc_id < args.min_doc_id or doc_id > args.max_doc_id:
+                continue
+            inferred.add(doc_id)
+        doc_ids = sorted(inferred)
+
+    if args.limit is not None:
+        doc_ids = doc_ids[: args.limit]
+    if args.max_docs is not None:
+        doc_ids = doc_ids[: args.max_docs]
+
+    if not doc_ids:
+        logger.info("No candidate documents after Supabase filtering; exiting")
         return
 
     pdf_map: dict[int, Path] = {}
-    for pdf in args.pdf:
-        pdf_path = Path(pdf)
-        if not pdf_path.exists():
-            logger.warning("Skipping missing PDF: %s", pdf_path)
-            continue
+    missing_pdfs: list[int] = []
+    for doc_id in doc_ids:
+        pdf_path = pdf_dir / f"doc_{doc_id}.pdf"
+        if pdf_path.exists():
+            pdf_map[doc_id] = pdf_path
+        else:
+            missing_pdfs.append(doc_id)
 
-        doc_id = _parse_doc_id_from_path(pdf_path)
-        if doc_id is None:
-            logger.warning("Could not determine document ID from %s", pdf_path.name)
-            continue
-
-        pdf_map[doc_id] = pdf_path
+    if missing_pdfs:
+        logger.warning(
+            "PDFs missing for %s documents: %s",
+            len(missing_pdfs),
+            missing_pdfs,
+        )
 
     if not pdf_map:
-        logger.error("No valid PDF inputs detected; aborting images-only pipeline")
-        return
-
-    doc_ids = sorted(pdf_map.keys())
-    logger.info("Evaluating %s documents for images-only processing", len(doc_ids))
-
-    supabase_config = SupabaseConfig.from_env()
-    existing = await fetch_existing_representations(supabase_config)
-
-    eligible_docs: list[int] = []
-    skipped_missing_docling: list[int] = []
-    skipped_has_docling_img: list[int] = []
-
-    for doc_id in doc_ids:
-        reps = existing.get(doc_id, set())
-        if "DOCLING" not in reps:
-            skipped_missing_docling.append(doc_id)
-            continue
-        if "DOCLING_IMG" in reps:
-            skipped_has_docling_img.append(doc_id)
-            continue
-        eligible_docs.append(doc_id)
-
-    if skipped_missing_docling:
-        logger.info(
-            "Skipping %s documents with no DOCLING representation: %s",
-            len(skipped_missing_docling),
-            skipped_missing_docling,
-        )
-    if skipped_has_docling_img:
-        logger.info(
-            "Skipping %s documents that already have DOCLING_IMG: %s",
-            len(skipped_has_docling_img),
-            skipped_has_docling_img,
-        )
-
-    if args.max_docs is not None:
-        eligible_docs = eligible_docs[: args.max_docs]
-
-    if not eligible_docs:
-        logger.info("No documents require images-only processing; exiting")
+        logger.error("No PDFs available locally after download step; aborting")
         return
 
     downloader = DoclingMarkdownDownloader(
@@ -407,7 +427,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
         supabase_config=supabase_config,
         aws_profile=getattr(args, "aws_profile", None),
     )
-    download_summary = await downloader.download(eligible_docs)
+    download_summary = await downloader.download(list(pdf_map.keys()))
     logger.info(
         "Markdown download summary: requested=%s downloaded=%s skipped=%s missing=%s failed=%s",
         download_summary.requested,
@@ -421,55 +441,64 @@ async def run_images_only(args: argparse.Namespace) -> None:
             logger.error("Failed to download markdown for doc_%s: %s", doc_id, error_msg)
 
     final_docs: list[int] = []
-    for doc_id in eligible_docs:
+    for doc_id in sorted(pdf_map.keys()):
         md_path = output_dir / f"doc_{doc_id}.md"
         if md_path.exists():
             final_docs.append(doc_id)
         else:
-            logger.warning(
-                "Markdown not available locally for doc_%s; skipping image extraction",
-                doc_id,
-            )
+            logger.warning("Markdown missing for doc_%s; skipping", doc_id)
 
     if not final_docs:
-        logger.error("No documents remain after markdown download; aborting")
+        logger.error("No documents have both PDF and markdown; aborting")
         return
 
+    docs_with_images: list[int] = []
     total_images = 0
-    processed_docs: list[int] = []
 
     for doc_id in final_docs:
         pdf_path = pdf_map[doc_id]
-        doc_images_dir = images_dir / f"doc_{doc_id}"
-        if doc_images_dir.exists():
-            shutil.rmtree(doc_images_dir, ignore_errors=True)
+        base_doc_dir = images_base_dir / f"doc_{doc_id}"
 
-        try:
-            count = await asyncio.to_thread(
-                extract_images_from_pdf,
-                pdf_path,
-                doc_images_dir,
-            )
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.exception("Image extraction failed for doc_%s: %s", doc_id, exc)
+        if _directory_has_images(base_doc_dir) and not args.force_reextract:
+            logger.info("Reusing cached images for doc_%s", doc_id)
+        else:
+            if base_doc_dir.exists():
+                shutil.rmtree(base_doc_dir, ignore_errors=True)
+            base_doc_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                count = await asyncio.to_thread(
+                    extract_images_from_pdf,
+                    pdf_path,
+                    base_doc_dir,
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.exception("Image extraction failed for doc_%s: %s", doc_id, exc)
+                continue
+
+            if count == 0:
+                logger.warning("No images found in doc_%s", doc_id)
+                continue
+            total_images += count
+
+        if not _directory_has_images(base_doc_dir):
+            logger.warning("Image directory empty after extraction for doc_%s", doc_id)
             continue
 
-        if count > 0:
-            total_images += count
-            processed_docs.append(doc_id)
-        else:
-            logger.warning("No images found in doc_%s", doc_id)
+        docs_with_images.append(doc_id)
 
-    if not processed_docs:
-        logger.warning("No images extracted; skipping Gemini workflow")
+    if not docs_with_images:
+        logger.warning("No documents produced images; skipping Gemini workflow")
         return
 
     logger.info(
-        "Extracted %s images across %s documents", total_images, len(processed_docs)
+        "Prepared images for %s documents (new images: %s)",
+        len(docs_with_images),
+        total_images,
     )
 
+    session_id = args.session_id or uuid4().hex[:8]
     workflow = ImageDescriptionWorkflow(
-        images_dir=images_dir,
+        images_dir=images_base_dir,
         processed_markdown_dir=output_dir,
         enhanced_markdown_dir=enhanced_dir,
         generated_root=args.generated_root,
@@ -482,12 +511,13 @@ async def run_images_only(args: argparse.Namespace) -> None:
     )
 
     upload_summary = await workflow.run(
-        session_id=args.session_id,
+        session_id=session_id,
         batch_size=args.image_batch_size,
         system_instruction=args.image_system_instruction,
         wait_seconds=args.image_wait_seconds,
         max_retries=args.image_max_retries,
         upload=not args.skip_image_upload,
+        allowed_doc_ids=docs_with_images,
     )
 
     logger.info(
@@ -558,14 +588,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     images_parser = subparsers.add_parser(
         "images",
-        help="Run images-only workflow for documents with existing Docling markdown",
+        help="Run images-only workflow for documents missing DOCLING_IMG",
+    )
+    images_parser.add_argument("min_doc_id", type=int, help="Minimum document ID to consider")
+    images_parser.add_argument("max_doc_id", type=int, help="Maximum document ID to consider")
+    images_parser.add_argument(
+        "limit",
+        type=int,
+        nargs="?",
+        default=None,
+        help="Maximum number of documents to process (optional)",
     )
     images_parser.add_argument(
-        "--pdf",
+        "--config",
         type=Path,
-        action="append",
-        required=True,
-        help="PDF file to process (repeatable)",
+        default=CONFIGS_DIR / "config.yaml",
+        help="Pipeline configuration file for Supabase/API access",
+    )
+    images_parser.add_argument(
+        "--input-folder",
+        type=Path,
+        default=DATA_DIR / "to_process",
+        help="Directory where PDFs are stored/ downloaded",
     )
     images_parser.add_argument(
         "--output-folder",
@@ -576,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     images_parser.add_argument(
         "--images-dir",
         type=Path,
-        default=DATA_DIR / "images_only",
+        default=DATA_DIR / "images",
         help="Directory to store extracted images",
     )
     images_parser.add_argument(
@@ -655,6 +699,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-image-upload",
         action="store_true",
         help="Skip uploading merged markdown to Supabase",
+    )
+    images_parser.add_argument(
+        "--skip-pdf-download",
+        action="store_true",
+        help="Assume PDFs already exist locally and skip Supabase download",
+    )
+    images_parser.add_argument(
+        "--force-reextract",
+        action="store_true",
+        help="Re-extract images even if cached images already exist",
     )
     images_parser.add_argument(
         "--max-docs",

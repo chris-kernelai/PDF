@@ -263,7 +263,7 @@ class DocumentFetcher:
                     self.stats.documents_skipped_existing += 1
                     continue
 
-            if str(doc_id) in self.completed_doc_ids:
+            if not self.run_all_images and str(doc_id) in self.completed_doc_ids:
                 self.stats.documents_skipped_completed += 1
                 continue
 
