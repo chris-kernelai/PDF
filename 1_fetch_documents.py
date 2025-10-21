@@ -987,6 +987,11 @@ class DocumentFetcher:
 
         self.logger.info(f"Found {len(doc_ids_missing_img)} documents to process")
 
+        # Apply limit if set (for batching)
+        if self.limit and len(doc_ids_missing_img) > self.limit:
+            self.logger.info(f"Limiting to {self.limit} documents (batch mode)")
+            doc_ids_missing_img = doc_ids_missing_img[:self.limit]
+
         # Step 2: Fetch document metadata from kdocuments database
         conn = self._get_db_connection()
         try:
