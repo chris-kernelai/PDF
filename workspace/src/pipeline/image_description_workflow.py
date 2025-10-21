@@ -262,9 +262,14 @@ class ImageDescriptionWorkflow:
             upload_result.jobs,
         )
 
+        if download_result.total_descriptions == 0:
+            logger.warning("No descriptions downloaded from Gemini; skipping integration and upload")
+            return UploadSummary(skipped=len(prep_result.doc_ids))
+
         integration_result = await asyncio.to_thread(
             self._integrate_descriptions,
             download_result.descriptions_dir,
+            prep_result.doc_ids,
         )
 
         summary = UploadSummary()
@@ -520,6 +525,7 @@ class ImageDescriptionWorkflow:
         session_outputs: List[Path] = []
         total_descriptions = 0
 
+        file_counter = 0
         for job in jobs:
             job_info = client.batches.get(name=job.job_name)
             dest = getattr(job_info, "dest", None)
@@ -542,14 +548,16 @@ class ImageDescriptionWorkflow:
                 records = [json.loads(line) for line in content.strip().split("\n") if line.strip()]
                 total_descriptions += len(records)
 
-                output_file = descriptions_dir / f"{Path(blob.name).stem}_{session_id}.json"
+                output_file = descriptions_dir / f"image_descriptions_{session_id}_{file_counter:04d}.json"
+                file_counter += 1
+
                 with open(output_file, "w", encoding="utf-8") as fh:
                     json.dump(records, fh, indent=2)
                 session_outputs.append(output_file)
                 logger.info("Downloaded %s records to %s", len(records), output_file)
 
         if not session_outputs:
-            raise RuntimeError("No description files downloaded from Gemini outputs")
+            logger.warning("No description files downloaded from Gemini outputs")
 
         self._update_uuid_tracking(descriptions_dir, session_outputs, session_id)
         return DownloadResult(
@@ -585,7 +593,14 @@ class ImageDescriptionWorkflow:
             with open(file, "r", encoding="utf-8") as fh:
                 records = json.load(fh)
             for record in records:
-                doc_id = record.get("document_id") or record.get("key", "").split("_")[0]
+                # Extract doc_id from key like "doc_27336_page_005_img_09"
+                doc_id = record.get("document_id")
+                if not doc_id:
+                    key = record.get("key", "")
+                    if key.startswith("doc_"):
+                        parts = key.split("_")
+                        if len(parts) > 1:
+                            doc_id = parts[1]  # Extract "27336" from "doc_27336_page_..."
                 batch_uuid = record.get("batch_uuid", session_id)
                 if not doc_id:
                     continue
@@ -601,7 +616,11 @@ class ImageDescriptionWorkflow:
         tracking_file.write_text(json.dumps(tracking_data, indent=2))
         logger.info("Updated UUID tracking at %s", tracking_file)
 
-    def _integrate_descriptions(self, descriptions_dir: Path) -> IntegrationResult:
+    def _integrate_descriptions(
+        self,
+        descriptions_dir: Path,
+        target_doc_ids: Optional[Iterable[int]] = None,
+    ) -> IntegrationResult:
         integrator = ImageDescriptionIntegrator(
             markdown_dir=self.processed_markdown_dir,
             output_dir=self.enhanced_markdown_dir,
@@ -609,8 +628,39 @@ class ImageDescriptionWorkflow:
             image_format=self.image_format,
             overwrite=True,
         )
+
         descriptions = integrator.load_all_descriptions()
-        integrator.process_all(descriptions)
+
+        if target_doc_ids is not None:
+            allowed = {str(int(doc_id)) for doc_id in target_doc_ids}
+            descriptions = {
+                doc_id: records
+                for doc_id, records in descriptions.items()
+                if doc_id in allowed
+            }
+
+        if not descriptions:
+            logger.warning("No descriptions available for integration; skipping")
+            return IntegrationResult(
+                processed_files=0,
+                skipped_files=0,
+                failed_files=0,
+                descriptions_added=0
+            )
+
+        integrator.stats["total_files"] = len(descriptions)
+
+        for doc_id, records in descriptions.items():
+            markdown_path = self.processed_markdown_dir / f"doc_{doc_id}.md"
+            if not markdown_path.exists():
+                markdown_path = self.processed_markdown_dir / f"{doc_id}.md"
+            if not markdown_path.exists():
+                logger.warning("Markdown missing for doc_%s; skipping integration", doc_id)
+                integrator.stats["skipped_files"] += 1
+                continue
+
+            integrator.process_document(markdown_path, records)
+
         stats = integrator.stats
         integrator.print_summary()
         return IntegrationResult(

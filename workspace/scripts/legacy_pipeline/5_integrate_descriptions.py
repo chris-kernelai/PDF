@@ -129,6 +129,31 @@ class ImageDescriptionIntegrator:
                 with open(json_file, "r", encoding="utf-8") as f:
                     descriptions = json.load(f)
 
+                # Infer batch_uuid from filename if not in records
+                # Filename format: image_descriptions_5070b6b9_0001.json
+                import re
+                uuid_match = re.search(r"image_descriptions_([a-f0-9]+)_\d+\.json", json_file.name)
+                inferred_uuid = uuid_match.group(1) if uuid_match else None
+
+                for desc in descriptions:
+                    if "batch_uuid" not in desc and inferred_uuid:
+                        desc["batch_uuid"] = inferred_uuid
+
+                    # Extract description text from Gemini response structure
+                    if "description" not in desc and "response" in desc:
+                        try:
+                            response = desc["response"]
+                            if "candidates" in response and len(response["candidates"]) > 0:
+                                candidate = response["candidates"][0]
+                                if "content" in candidate:
+                                    content = candidate["content"]
+                                    if "parts" in content and len(content["parts"]) > 0:
+                                        text = content["parts"][0].get("text", "")
+                                        desc["description"] = text
+                        except (KeyError, IndexError, TypeError) as e:
+                            logger.warning(f"Failed to extract description from response for key {desc.get('key', 'unknown')}: {e}")
+                            desc["description"] = ""
+
                 all_descriptions.extend(descriptions)
                 logger.debug(f"Loaded {len(descriptions)} descriptions from {json_file.name}")
 
@@ -141,14 +166,35 @@ class ImageDescriptionIntegrator:
         for desc in all_descriptions:
             # Extract document_id from key if document_id is invalid (e.g., "page")
             doc_id = desc.get("document_id", "")
+            key = desc.get("key", "")
+
             if not doc_id or doc_id == "page":
-                # Parse from key format: "37503_page_022_img_49" -> "37503"
-                key = desc.get("key", "")
+                # Parse from key format: "doc_37503_page_022_img_49" -> "37503"
+                # or "37503_page_022_img_49" -> "37503"
                 if key and "_" in key:
-                    doc_id = key.split("_")[0]
+                    parts = key.split("_")
+                    if key.startswith("doc_") and len(parts) > 1:
+                        doc_id = parts[1]  # "doc_27336_page_..." -> "27336"
+                    else:
+                        doc_id = parts[0]  # "27336_page_..." -> "27336"
                 else:
                     logger.warning(f"Could not extract document_id from key: {key}")
                     continue
+
+            # Parse page_number and image_index from key if not present
+            if "page_number" not in desc or "image_index" not in desc:
+                import re
+                if key:
+                    # Extract from "doc_27336_page_005_img_09" or "27336_page_022_img_49"
+                    page_match = re.search(r"page_(\d+)", key)
+                    img_match = re.search(r"img_(\d+)", key)
+                    if page_match and img_match:
+                        desc["page_number"] = int(page_match.group(1))
+                        desc["image_index"] = int(img_match.group(1))
+                    else:
+                        logger.warning(f"Could not extract page/img from key: {key}")
+                        desc["page_number"] = 0
+                        desc["image_index"] = 0
 
             batch_uuid = desc.get("batch_uuid", "")
 

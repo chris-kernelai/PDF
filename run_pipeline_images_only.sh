@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./run_pipeline_images_only.sh [--profile <aws_profile>] <min_doc_id> <max_doc_id> [limit] [-- extra run_pipeline.py args]
+Usage: ./run_pipeline_images_only.sh [--profile <aws_profile>] <min_doc_id> <max_doc_id> [doc_batch_size] [-- extra run_pipeline.py args]
 
 Examples:
   ./run_pipeline_images_only.sh 27000 27199
@@ -79,9 +79,9 @@ if [ "$MIN_DOC_ID" -gt "$MAX_DOC_ID" ]; then
     exit 1
 fi
 
-LIMIT=""
+DOC_BATCH_SIZE=""
 if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
-    LIMIT=$1
+    DOC_BATCH_SIZE=$1
     shift
 fi
 
@@ -92,8 +92,8 @@ if [ -n "$PROFILE" ]; then
     CMD+=("--aws-profile" "$PROFILE")
 fi
 CMD+=("images" "$MIN_DOC_ID" "$MAX_DOC_ID")
-if [ -n "$LIMIT" ]; then
-    CMD+=("$LIMIT")
+if [ -n "$DOC_BATCH_SIZE" ]; then
+    CMD+=("--doc-batch-size" "$DOC_BATCH_SIZE")
 fi
 if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
     CMD+=("${EXTRA_ARGS[@]}")

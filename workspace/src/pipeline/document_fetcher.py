@@ -96,6 +96,11 @@ class DocumentFetcher:
         """Fetch documents and optionally download PDFs."""
         if self.run_all_images:
             doc_ids = await fetch_doc_ids_missing_docling_img(self.supabase_config)
+            # Filter by min/max doc ID range
+            if self.min_doc_id is not None:
+                doc_ids = [doc_id for doc_id in doc_ids if doc_id >= self.min_doc_id]
+            if self.max_doc_id is not None:
+                doc_ids = [doc_id for doc_id in doc_ids if doc_id <= self.max_doc_id]
             if self.limit is not None:
                 doc_ids = doc_ids[: self.limit]
             documents = self._load_documents_for_ids(doc_ids)
@@ -255,11 +260,14 @@ class DocumentFetcher:
             reps = existing_reps.get(doc_id, set())
 
             if not self.run_all_images:
-                if "DOCLING" in reps and "DOCLING_IMG" in reps:
+                if "DOCLING" in reps or "DOCLING_IMG" in reps:
                     self.stats.documents_skipped_existing += 1
                     continue
             else:
                 if "DOCLING_IMG" in reps:
+                    self.stats.documents_skipped_existing += 1
+                    continue
+                if "DOCLING" not in reps:
                     self.stats.documents_skipped_existing += 1
                     continue
 

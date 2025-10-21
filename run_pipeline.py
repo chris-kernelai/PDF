@@ -402,101 +402,26 @@ async def run_images_only(args: argparse.Namespace) -> None:
         logger.info("No candidate documents after Supabase filtering; exiting")
         return
 
-    pdf_map: dict[int, Path] = {}
-    missing_pdfs: list[int] = []
-    for doc_id in doc_ids:
-        pdf_path = pdf_dir / f"doc_{doc_id}.pdf"
-        if pdf_path.exists():
-            pdf_map[doc_id] = pdf_path
-        else:
-            missing_pdfs.append(doc_id)
+    doc_batches = [
+        doc_ids[i : i + args.doc_batch_size]
+        for i in range(0, len(doc_ids), args.doc_batch_size)
+    ]
 
-    if missing_pdfs:
-        logger.warning(
-            "PDFs missing for %s documents: %s",
-            len(missing_pdfs),
-            missing_pdfs,
-        )
-
-    if not pdf_map:
-        logger.error("No PDFs available locally after download step; aborting")
-        return
-
-    downloader = DoclingMarkdownDownloader(
-        output_dir=output_dir,
-        supabase_config=supabase_config,
-        aws_profile=getattr(args, "aws_profile", None),
-    )
-    download_summary = await downloader.download(list(pdf_map.keys()))
+    total_batches = len(doc_batches)
     logger.info(
-        "Markdown download summary: requested=%s downloaded=%s skipped=%s missing=%s failed=%s",
-        download_summary.requested,
-        download_summary.downloaded,
-        download_summary.skipped_existing,
-        len(download_summary.missing),
-        len(download_summary.failed),
+        "Processing %s batch(es) (%s documents total, batch size=%s)",
+        total_batches,
+        len(doc_ids),
+        args.doc_batch_size,
     )
-    if download_summary.failed:
-        for doc_id, error_msg in download_summary.failed.items():
-            logger.error("Failed to download markdown for doc_%s: %s", doc_id, error_msg)
 
-    final_docs: list[int] = []
-    for doc_id in sorted(pdf_map.keys()):
-        md_path = output_dir / f"doc_{doc_id}.md"
-        if md_path.exists():
-            final_docs.append(doc_id)
-        else:
-            logger.warning("Markdown missing for doc_%s; skipping", doc_id)
-
-    if not final_docs:
-        logger.error("No documents have both PDF and markdown; aborting")
-        return
-
-    docs_with_images: list[int] = []
-    total_images = 0
-
-    for doc_id in final_docs:
-        pdf_path = pdf_map[doc_id]
-        base_doc_dir = images_base_dir / f"doc_{doc_id}"
-
-        if _directory_has_images(base_doc_dir) and not args.force_reextract:
-            logger.info("Reusing cached images for doc_%s", doc_id)
-        else:
-            if base_doc_dir.exists():
-                shutil.rmtree(base_doc_dir, ignore_errors=True)
-            base_doc_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                count = await asyncio.to_thread(
-                    extract_images_from_pdf,
-                    pdf_path,
-                    base_doc_dir,
-                )
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.exception("Image extraction failed for doc_%s: %s", doc_id, exc)
-                continue
-
-            if count == 0:
-                logger.warning("No images found in doc_%s", doc_id)
-                continue
-            total_images += count
-
-        if not _directory_has_images(base_doc_dir):
-            logger.warning("Image directory empty after extraction for doc_%s", doc_id)
-            continue
-
-        docs_with_images.append(doc_id)
-
-    if not docs_with_images:
-        logger.warning("No documents produced images; skipping Gemini workflow")
-        return
-
-    logger.info(
-        "Prepared images for %s documents (new images: %s)",
-        len(docs_with_images),
-        total_images,
-    )
+    overall_summary = UploadSummary()
+    overall_total_images = 0
+    overall_processed_docs = 0
 
     session_id = args.session_id or uuid4().hex[:8]
+    base_session_id = args.session_id or uuid4().hex[:8]
+
     workflow = ImageDescriptionWorkflow(
         images_dir=images_base_dir,
         processed_markdown_dir=output_dir,
@@ -510,22 +435,321 @@ async def run_images_only(args: argparse.Namespace) -> None:
         aws_profile=getattr(args, "aws_profile", None),
     )
 
-    upload_summary = await workflow.run(
-        session_id=session_id,
-        batch_size=args.image_batch_size,
-        system_instruction=args.image_system_instruction,
-        wait_seconds=args.image_wait_seconds,
-        max_retries=args.image_max_retries,
-        upload=not args.skip_image_upload,
-        allowed_doc_ids=docs_with_images,
+    async def process_batch(batch_doc_ids: list[int], batch_index: int) -> tuple[UploadSummary, int, int]:
+        logger.info(
+            "\n=== Images batch %s/%s (%s docs) ===",
+            batch_index,
+            total_batches,
+            len(batch_doc_ids),
+        )
+
+        pdf_map: dict[int, Path] = {}
+        missing_pdfs: list[int] = []
+        for doc_id in batch_doc_ids:
+            pdf_path = pdf_dir / f"doc_{doc_id}.pdf"
+            if pdf_path.exists():
+                pdf_map[doc_id] = pdf_path
+            else:
+                missing_pdfs.append(doc_id)
+
+        if missing_pdfs:
+            logger.warning(
+                "Batch %s missing PDFs for %s documents: %s",
+                batch_index,
+                len(missing_pdfs),
+                missing_pdfs,
+            )
+
+        if not pdf_map:
+            logger.warning("No PDFs available for batch %s; skipping", batch_index)
+            return UploadSummary(), 0, 0
+
+        downloader = DoclingMarkdownDownloader(
+            output_dir=output_dir,
+            supabase_config=supabase_config,
+            aws_profile=getattr(args, "aws_profile", None),
+        )
+        download_summary = await downloader.download(pdf_map.keys())
+        logger.info(
+            "Batch %s markdown download: requested=%s downloaded=%s skipped=%s missing=%s failed=%s",
+            batch_index,
+            download_summary.requested,
+            download_summary.downloaded,
+            download_summary.skipped_existing,
+            len(download_summary.missing),
+            len(download_summary.failed),
+        )
+        if download_summary.failed:
+            for doc_id, error_msg in download_summary.failed.items():
+                logger.error("Batch %s failed markdown download doc_%s: %s", batch_index, doc_id, error_msg)
+
+        final_docs: list[int] = []
+        for doc_id in sorted(pdf_map.keys()):
+            md_path = output_dir / f"doc_{doc_id}.md"
+            if md_path.exists():
+                final_docs.append(doc_id)
+            else:
+                logger.warning(
+                    "Batch %s markdown missing for doc_%s; skipping",
+                    batch_index,
+                    doc_id,
+                )
+
+        if not final_docs:
+            logger.warning("Batch %s: no documents have markdown; skipping", batch_index)
+            return UploadSummary(), 0, 0
+
+        docs_with_images: list[int] = []
+        total_images = 0
+
+        for doc_id in final_docs:
+            pdf_path = pdf_map[doc_id]
+            base_doc_dir = images_base_dir / f"doc_{doc_id}"
+
+            if _directory_has_images(base_doc_dir) and not args.force_reextract:
+                logger.info("Batch %s reusing cached images for doc_%s", batch_index, doc_id)
+            else:
+                if base_doc_dir.exists():
+                    shutil.rmtree(base_doc_dir, ignore_errors=True)
+                base_doc_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    count = await asyncio.to_thread(
+                        extract_images_from_pdf,
+                        pdf_path,
+                        base_doc_dir,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.exception("Batch %s image extraction failed for doc_%s: %s", batch_index, doc_id, exc)
+                    continue
+
+                if count == 0:
+                    logger.warning("Batch %s no figures found in doc_%s", batch_index, doc_id)
+                    continue
+                total_images += count
+
+            if not _directory_has_images(base_doc_dir):
+                logger.warning("Batch %s image directory empty for doc_%s", batch_index, doc_id)
+                continue
+
+            docs_with_images.append(doc_id)
+
+        if not docs_with_images:
+            logger.warning("Batch %s produced no images; skipping Gemini", batch_index)
+            return UploadSummary(), 0, 0
+
+        batch_session_id = f"{base_session_id}-{batch_index:03d}"
+        upload_summary = await workflow.run(
+            session_id=batch_session_id,
+            batch_size=args.image_batch_size,
+            system_instruction=args.image_system_instruction,
+            wait_seconds=args.image_wait_seconds,
+            max_retries=args.image_max_retries,
+            upload=not args.skip_image_upload,
+            allowed_doc_ids=docs_with_images,
+        )
+
+        logger.info(
+            "Batch %s upload summary: uploaded=%s skipped=%s failed=%s",
+            batch_index,
+            upload_summary.uploaded,
+            upload_summary.skipped,
+            upload_summary.failed,
+        )
+
+        return upload_summary, total_images, len(docs_with_images)
+
+    for batch_index, batch_doc_ids in enumerate(doc_batches, start=1):
+        upload_summary, batch_images, batch_doc_count = await process_batch(batch_doc_ids, batch_index)
+        overall_summary.uploaded += upload_summary.uploaded
+        overall_summary.skipped += upload_summary.skipped
+        overall_summary.failed += upload_summary.failed
+        overall_summary.errors.extend(upload_summary.errors)
+        overall_total_images += batch_images
+        overall_processed_docs += batch_doc_count
+
+    logger.info(
+        "Images-only pipeline complete: %s documents processed across %s batch(es); total new images: %s",
+        overall_processed_docs,
+        total_batches,
+        overall_total_images,
+    )
+    logger.info(
+        "Overall upload summary: uploaded=%s skipped=%s failed=%s",
+        overall_summary.uploaded,
+        overall_summary.skipped,
+        overall_summary.failed,
+    )
+
+
+async def run_integrate_images(args: argparse.Namespace) -> None:
+    """Integrate existing image descriptions and upload to Supabase."""
+    configure_logging()
+    logger = logging.getLogger("pipeline.integrate_images")
+
+    _ensure_data_dirs()
+
+    if not args.session_id:
+        logger.error("--session-id is required for integrate-images command")
+        return
+
+    descriptions_dir = args.generated_root / "image_descriptions"
+    descriptions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download from GCS if requested
+    if args.download:
+        logger.info("Downloading results from GCS for session %s", args.session_id)
+
+        # Load tracking file to get job information
+        tracking_file = args.generated_root / args.batch_prefix / "batch_jobs_tracking.json"
+        if not tracking_file.exists():
+            logger.error("Tracking file not found: %s", tracking_file)
+            logger.error("Cannot download without job tracking information")
+            return
+
+        import json
+        with open(tracking_file, "r") as fh:
+            tracking_data = json.load(fh)
+
+        # Filter jobs for this session
+        all_jobs = tracking_data.get("jobs", [])
+        session_jobs = [
+            job for job in all_jobs
+            if args.session_id in str(job.get("batch_file", ""))
+        ]
+
+        if not session_jobs:
+            logger.error("No jobs found for session %s in tracking file", args.session_id)
+            return
+
+        logger.info("Found %s batch jobs for session %s", len(session_jobs), args.session_id)
+
+        # Initialize clients
+        from src.pipeline.gemini import init_client, validate_environment
+        from google.cloud import storage
+
+        validate_environment()
+        client = init_client()
+        gcs_client = storage.Client()
+
+        # Create UploadJob objects for download
+        from dataclasses import dataclass
+        @dataclass
+        class UploadJob:
+            batch_file: Path
+            job_name: str
+            timestamp: str
+
+        jobs = [
+            UploadJob(
+                batch_file=Path(job["batch_file"]),
+                job_name=job["job_name"],
+                timestamp=job["timestamp"]
+            )
+            for job in session_jobs
+        ]
+
+        # Download results
+        workflow = ImageDescriptionWorkflow(
+            images_dir=args.images_dir,
+            processed_markdown_dir=args.output_folder,
+            enhanced_markdown_dir=args.enhanced_dir,
+            generated_root=args.generated_root,
+            gemini_model=args.gemini_model,
+            gcs_input_prefix=args.gcs_input_prefix,
+            gcs_output_prefix=args.gcs_output_prefix,
+            batch_prefix=args.batch_prefix,
+            image_format=args.image_format,
+            aws_profile=getattr(args, "aws_profile", None),
+        )
+
+        download_result = await asyncio.to_thread(
+            workflow._download_results,
+            client,
+            gcs_client,
+            args.session_id,
+            jobs,
+        )
+
+        logger.info(
+            "Downloaded %s description files (%s total descriptions)",
+            len(download_result.description_files),
+            download_result.total_descriptions,
+        )
+
+    # Find description files for this session
+    description_files = list(descriptions_dir.glob(f"image_descriptions_{args.session_id}_*.json"))
+    if not description_files:
+        logger.error("No description files found for session %s", args.session_id)
+        if args.download:
+            logger.error("Download completed but no files were created - check GCS outputs")
+        return
+
+    logger.info("Found %s description files for session %s", len(description_files), args.session_id)
+
+    # Determine which doc IDs to process
+    doc_ids: set[int] = set()
+    for desc_file in description_files:
+        import json
+        with open(desc_file, "r") as fh:
+            records = json.load(fh)
+        for record in records:
+            key = record.get("key", "")
+            if key.startswith("doc_"):
+                doc_name = key.split("_page_")[0]
+                try:
+                    doc_id = int(doc_name.replace("doc_", ""))
+                    # Filter by range if specified
+                    if args.min_doc_id is not None and doc_id < args.min_doc_id:
+                        continue
+                    if args.max_doc_id is not None and doc_id > args.max_doc_id:
+                        continue
+                    doc_ids.add(doc_id)
+                except ValueError:
+                    continue
+
+    if not doc_ids:
+        logger.error("No valid document IDs found in description files")
+        return
+
+    logger.info("Processing %s documents from session %s", len(doc_ids), args.session_id)
+
+    # Run integration
+    workflow = ImageDescriptionWorkflow(
+        images_dir=args.images_dir,
+        processed_markdown_dir=args.output_folder,
+        enhanced_markdown_dir=args.enhanced_dir,
+        generated_root=args.generated_root,
+        gemini_model=args.gemini_model,
+        gcs_input_prefix=args.gcs_input_prefix,
+        gcs_output_prefix=args.gcs_output_prefix,
+        batch_prefix=args.batch_prefix,
+        image_format=args.image_format,
+        aws_profile=getattr(args, "aws_profile", None),
+    )
+
+    integration_result = await asyncio.to_thread(
+        workflow._integrate_descriptions,
+        descriptions_dir,
+        doc_ids,
     )
 
     logger.info(
-        "Image upload summary: uploaded=%s skipped=%s failed=%s",
-        upload_summary.uploaded,
-        upload_summary.skipped,
-        upload_summary.failed,
+        "Integration complete: %s files processed, %s descriptions added",
+        integration_result.processed_files,
+        integration_result.descriptions_added,
     )
+
+    # Upload to Supabase if requested
+    if not args.skip_upload:
+        upload_summary = await workflow._upload_documents(doc_ids)
+        logger.info(
+            "Upload summary: uploaded=%s skipped=%s failed=%s",
+            upload_summary.uploaded,
+            upload_summary.skipped,
+            upload_summary.failed,
+        )
+        for error in upload_summary.errors:
+            logger.error("Upload error: %s", error)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -593,11 +817,16 @@ def build_parser() -> argparse.ArgumentParser:
     images_parser.add_argument("min_doc_id", type=int, help="Minimum document ID to consider")
     images_parser.add_argument("max_doc_id", type=int, help="Maximum document ID to consider")
     images_parser.add_argument(
-        "limit",
+        "--doc-batch-size",
         type=int,
-        nargs="?",
+        default=10,
+        help="Number of documents to process per batch",
+    )
+    images_parser.add_argument(
+        "--limit",
+        type=int,
         default=None,
-        help="Maximum number of documents to process (optional)",
+        help="Maximum total number of documents to process",
     )
     images_parser.add_argument(
         "--config",
@@ -717,6 +946,93 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit the number of documents processed",
     )
 
+    integrate_parser = subparsers.add_parser(
+        "integrate-images",
+        help="Integrate existing image descriptions and upload to Supabase (requires session-id)",
+    )
+    integrate_parser.add_argument(
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session identifier from previous Gemini batch run",
+    )
+    integrate_parser.add_argument(
+        "--min-doc-id",
+        type=int,
+        default=None,
+        help="Minimum document ID to process (optional filter)",
+    )
+    integrate_parser.add_argument(
+        "--max-doc-id",
+        type=int,
+        default=None,
+        help="Maximum document ID to process (optional filter)",
+    )
+    integrate_parser.add_argument(
+        "--output-folder",
+        type=Path,
+        default=DATA_DIR / "processed",
+        help="Directory containing Docling markdown files",
+    )
+    integrate_parser.add_argument(
+        "--enhanced-dir",
+        type=Path,
+        default=DATA_DIR / "processed_images",
+        help="Directory for markdown merged with image descriptions",
+    )
+    integrate_parser.add_argument(
+        "--images-dir",
+        type=Path,
+        default=DATA_DIR / "images",
+        help="Directory containing extracted images",
+    )
+    integrate_parser.add_argument(
+        "--generated-root",
+        type=Path,
+        default=WORKSPACE_ROOT / ".generated",
+        help="Directory containing image descriptions",
+    )
+    integrate_parser.add_argument(
+        "--image-format",
+        type=str,
+        default="detailed",
+        help="Image description formatting mode",
+    )
+    integrate_parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Download results from GCS before integrating",
+    )
+    integrate_parser.add_argument(
+        "--skip-upload",
+        action="store_true",
+        help="Skip uploading merged markdown to Supabase",
+    )
+    integrate_parser.add_argument(
+        "--gemini-model",
+        type=str,
+        default="gemini-2.0-flash-001",
+        help="Gemini model name (for workflow initialization)",
+    )
+    integrate_parser.add_argument(
+        "--gcs-input-prefix",
+        type=str,
+        default="gemini_batches/input",
+        help="GCS prefix (for workflow initialization)",
+    )
+    integrate_parser.add_argument(
+        "--gcs-output-prefix",
+        type=str,
+        default="gemini_batches/output",
+        help="GCS prefix (for workflow initialization)",
+    )
+    integrate_parser.add_argument(
+        "--batch-prefix",
+        type=str,
+        default="image_description_batches",
+        help="Batch prefix (for workflow initialization)",
+    )
+
     return parser
 
 
@@ -748,6 +1064,7 @@ async def async_main() -> int:
             "full": run_full,
             "markdown": run_markdown_only,
             "images": run_images_only,
+            "integrate-images": run_integrate_images,
         }
 
         if args.command not in command_map:

@@ -24,7 +24,7 @@ def _get_converter() -> DocumentConverter:
 
     pipeline_opts = PdfPipelineOptions()
     pipeline_opts.do_ocr = False
-    pipeline_opts.generate_page_images = True
+    pipeline_opts.generate_page_images = False
     pipeline_opts.generate_picture_images = True
     pipeline_opts.images_scale = 2.0
     pipeline_opts.do_table_structure = False
@@ -49,33 +49,28 @@ def extract_images_from_pdf(pdf_path: Path, output_dir: Path) -> int:
     document = result.document
     stem = pdf_path.stem
 
-    image_count = 0
-
-    for page_no, page in getattr(document, "pages", {}).items():
-        page_image = getattr(page, "image", None)
-        if page_image and getattr(page_image, "pil_image", None):
-            filename = output_dir / f"{stem}_page_{int(page_no):03d}.png"
-            page_image.pil_image.save(filename, "PNG")
-            image_count += 1
-
     figure_index = 0
     for element, _ in document.iterate_items():
-        if isinstance(element, PictureItem):
-            pil_image = element.get_image(document)
-            if pil_image is None:
-                continue
-            figure_index += 1
-            filename = output_dir / f"{stem}_figure_{figure_index:02d}.png"
-            pil_image.save(filename, "PNG")
-            image_count += 1
+        if not isinstance(element, PictureItem):
+            continue
 
-    logger.info(
-        "Extracted %s images (%s figures) from %s",
-        image_count,
-        figure_index,
-        pdf_path.name,
-    )
-    return image_count
+        pil_image = element.get_image(document)
+        if pil_image is None:
+            continue
+
+        page_num = 0
+        try:
+            if element.prov:
+                page_num = int(element.prov[0].page_no)
+        except Exception:  # pragma: no cover - defensive
+            page_num = 0
+
+        figure_index += 1
+        filename = output_dir / f"{stem}_page_{page_num:03d}_img_{figure_index:02d}.png"
+        pil_image.save(filename, "PNG")
+
+    logger.info("Extracted %s figure images from %s", figure_index, pdf_path.name)
+    return figure_index
 
 
 def extract_images_from_directory(pdf_dir: Path, output_dir: Path) -> int:
