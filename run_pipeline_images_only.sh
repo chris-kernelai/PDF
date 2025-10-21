@@ -28,10 +28,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --)
-            POSITIONAL_ARGS+=("$1")
             shift
+            POSITIONAL_ARGS+=("--")
             POSITIONAL_ARGS+=("$@")
             break
+            ;;
         *)
             POSITIONAL_ARGS+=("$1")
             shift
@@ -128,7 +129,9 @@ while [ $index -lt $total ]; do
         cmd+=("--aws-profile" "$PROFILE")
     fi
     cmd+=("images")
-    cmd+=("${EXTRA_ARGS[@]}")
+    if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
+        cmd+=("${EXTRA_ARGS[@]}")
+    fi
     for pdf in "${chunk[@]}"; do
         cmd+=("--pdf" "$pdf")
     done

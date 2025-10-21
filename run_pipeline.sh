@@ -18,10 +18,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --)
-            POSITIONAL_ARGS+=("$1")
             shift
+            POSITIONAL_ARGS+=("--")
             POSITIONAL_ARGS+=("$@")
             break
+            ;;
         *)
             POSITIONAL_ARGS+=("$1")
             shift
