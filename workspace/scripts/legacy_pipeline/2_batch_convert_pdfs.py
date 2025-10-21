@@ -145,8 +145,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-page-limit",
         type=int,
-        default=50,
-        help="Chunk PDFs to this many pages before conversion (default: 50)",
+        default=30,
+        help="Chunk PDFs to this many pages before conversion (default: 30)",
     )
     parser.add_argument(
         "--max-docs",

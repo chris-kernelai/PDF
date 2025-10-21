@@ -15,12 +15,14 @@ Optional:
   --min-doc-id <id>          Filter to only process docs >= this ID
   --max-doc-id <id>          Filter to only process docs <= this ID
   --download                 Download results from GCS before integrating
+  --force-reintegrate        Re-integrate even if enhanced markdown exists
   --skip-upload              Don't upload to Supabase (just integrate)
 
 Examples:
   ./run_integrate_images.sh --session-id abc123de
   ./run_integrate_images.sh --profile local --session-id abc123de --min-doc-id 27290 --max-doc-id 27344
   ./run_integrate_images.sh --session-id abc123de --download
+  ./run_integrate_images.sh --session-id abc123de --force-reintegrate
   ./run_integrate_images.sh --session-id abc123de --skip-upload
 EOF
 }

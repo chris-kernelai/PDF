@@ -71,93 +71,203 @@ def _ensure_data_dirs() -> None:
 
 async def run_full(args: argparse.Namespace) -> None:
     print("DEBUG: run_full() called", file=sys.stderr)
-    print(f"DEBUG: args.min_doc_id={args.min_doc_id}, args.max_doc_id={args.max_doc_id}, args.limit={args.limit}", file=sys.stderr)
+    print(f"DEBUG: args.min_doc_id={args.min_doc_id}, args.max_doc_id={args.max_doc_id}, args.doc_batch_size={args.doc_batch_size}", file=sys.stderr)
 
     configure_logging()
     logger = logging.getLogger("pipeline.full")
     logger.info("=" * 80)
-    logger.info("Starting full pipeline")
-    logger.info("Arguments: %s", args)
+    logger.info("Starting full pipeline with batching")
+    logger.info("Range: %s-%s, Batch size: %s", args.min_doc_id, args.max_doc_id, args.doc_batch_size)
     logger.info("=" * 80)
 
     print("DEBUG: Ensuring data directories", file=sys.stderr)
     _ensure_data_dirs()
     logger.info("Data directories created/verified")
 
-    print("DEBUG: Creating DocumentFetcher", file=sys.stderr)
-    fetcher = DocumentFetcher(
-        config_path=args.config,
-        limit=args.limit,
-        randomize=args.randomize,
-        random_seed=args.random_seed,
-        min_doc_id=args.min_doc_id,
-        max_doc_id=args.max_doc_id,
-        run_all_images=args.run_all_images,
-        download_pdfs=not args.fetch_only,
-    )
-    logger.info("DocumentFetcher created with config: %s", args.config)
+    batch_num = 0
+    total_processed = 0
+    total_uploaded = 0
 
-    print("DEBUG: Starting document fetch", file=sys.stderr)
-    logger.info("Fetching documents (min=%s, max=%s)", args.min_doc_id, args.max_doc_id)
-    fetch_stats = await fetcher.run()
-    logger.info(
-        "Fetched %s documents (selected=%s, downloaded=%s)",
-        fetch_stats.documents_considered,
-        fetch_stats.documents_selected,
-        fetch_stats.documents_downloaded,
-    )
-    print(f"DEBUG: Fetch complete - considered={fetch_stats.documents_considered}, selected={fetch_stats.documents_selected}, downloaded={fetch_stats.documents_downloaded}", file=sys.stderr)
+    while True:
+        batch_num += 1
+        logger.info("\n" + "=" * 80)
+        logger.info("BATCH %s: Fetching next %s documents", batch_num, args.doc_batch_size)
+        logger.info("=" * 80)
 
-    if args.fetch_only:
-        logger.info("Fetch-only flag set; skipping conversion stage")
-        return
+        print(f"DEBUG: Creating DocumentFetcher for batch {batch_num}", file=sys.stderr)
+        fetcher = DocumentFetcher(
+            config_path=args.config,
+            limit=args.doc_batch_size,
+            randomize=args.randomize,
+            random_seed=args.random_seed,
+            min_doc_id=args.min_doc_id,
+            max_doc_id=args.max_doc_id,
+            run_all_images=args.run_all_images,
+            download_pdfs=not args.fetch_only,
+        )
 
-    print("DEBUG: Starting markdown conversion", file=sys.stderr)
-    output_stats = await convert_folder(
-        input_folder=args.input_folder,
-        output_folder=args.output_folder,
-        batch_size=args.batch_size,
-        use_gpu=not args.cpu,
-        extract_images=not args.skip_images,
-        chunk_page_limit=args.chunk_page_limit,
-        max_docs=args.max_docs,
-        min_doc_id=args.min_doc_id,
-        max_doc_id=args.max_doc_id,
-    )
-    logger.info("Markdown conversion complete: %s", output_stats)
-    print(f"DEBUG: Markdown conversion stats: {output_stats}", file=sys.stderr)
+        print(f"DEBUG: Starting document fetch for batch {batch_num}", file=sys.stderr)
+        fetch_stats = await fetcher.run()
+        logger.info(
+            "Batch %s: Fetched %s documents (selected=%s, downloaded=%s)",
+            batch_num,
+            fetch_stats.documents_considered,
+            fetch_stats.documents_selected,
+            fetch_stats.documents_downloaded,
+        )
+        print(f"DEBUG: Batch {batch_num} fetch complete - selected={fetch_stats.documents_selected}, downloaded={fetch_stats.documents_downloaded}", file=sys.stderr)
 
-    if args.skip_images:
-        logger.info("Image workflow skipped by flag")
-        return
+        if args.fetch_only:
+            logger.info("Fetch-only flag set; skipping conversion stage")
+            if fetch_stats.documents_selected == 0:
+                break
+            continue
 
-    workflow = ImageDescriptionWorkflow(
-        images_dir=args.images_dir,
-        processed_markdown_dir=args.output_folder,
-        enhanced_markdown_dir=args.enhanced_dir,
-        generated_root=args.generated_root,
-        gemini_model=args.gemini_model,
-        gcs_input_prefix=args.gcs_input_prefix,
-        gcs_output_prefix=args.gcs_output_prefix,
-        batch_prefix=args.batch_prefix,
-        image_format=args.image_format,
-        aws_profile=getattr(args, "aws_profile", None),
-    )
+        if fetch_stats.documents_selected == 0:
+            logger.info("Batch %s: No more documents to process in range", batch_num)
+            break
 
-    upload_summary = await workflow.run(
-        session_id=args.session_id,
-        batch_size=args.image_batch_size,
-        system_instruction=args.image_system_instruction,
-        wait_seconds=args.image_wait_seconds,
-        max_retries=args.image_max_retries,
-        upload=not args.skip_image_upload,
-    )
-    logger.info(
-        "Image upload summary: uploaded=%s skipped=%s failed=%s",
-        upload_summary.uploaded,
-        upload_summary.skipped,
-        upload_summary.failed,
-    )
+        if fetch_stats.documents_selected > 0 and fetch_stats.documents_downloaded == 0:
+            logger.warning("Batch %s: Documents were selected but none downloaded successfully", batch_num)
+            # Check if any PDFs exist locally
+            pdf_count = len(list(args.input_folder.glob("*.pdf")))
+            if pdf_count == 0:
+                logger.error("Batch %s: No PDFs available; skipping this batch", batch_num)
+                continue
+
+        print(f"DEBUG: Batch {batch_num} starting markdown conversion", file=sys.stderr)
+        output_stats = await convert_folder(
+            input_folder=args.input_folder,
+            output_folder=args.output_folder,
+            batch_size=args.batch_size,
+            use_gpu=not args.cpu,
+            extract_images=not args.skip_images,
+            chunk_page_limit=args.chunk_page_limit,
+            max_docs=args.max_docs,
+            min_doc_id=args.min_doc_id,
+            max_doc_id=args.max_doc_id,
+        )
+        logger.info("Batch %s: Markdown conversion complete: %s", batch_num, output_stats)
+        print(f"DEBUG: Batch {batch_num} conversion stats: {output_stats}", file=sys.stderr)
+
+        total_processed += output_stats.get("processed_files", 0)
+        total_uploaded += output_stats.get("uploaded_files", 0)
+
+        # Clean up PDFs (already done by convert_folder with remove_processed=True)
+        # Clean up markdown files and images for this batch
+        processed_doc_ids = output_stats.get("doc_ids_processed", [])
+        if processed_doc_ids:
+            logger.info("Batch %s: Cleaning up %s processed documents", batch_num, len(processed_doc_ids))
+            cleanup_count = {"md": 0, "images": 0}
+
+            for doc_id in processed_doc_ids:
+                # Remove markdown files
+                md_files = [
+                    args.output_folder / f"doc_{doc_id}.md",
+                    args.output_folder / f"{doc_id}.md",
+                ]
+                for md_file in md_files:
+                    if md_file.exists():
+                        try:
+                            md_file.unlink()
+                            cleanup_count["md"] += 1
+                            logger.debug("Deleted markdown: %s", md_file.name)
+                        except Exception as exc:
+                            logger.warning("Failed to delete %s: %s", md_file.name, exc)
+
+                # Remove image directories
+                img_dirs = [
+                    args.images_dir / f"doc_{doc_id}",
+                    args.images_dir / str(doc_id),
+                ]
+                for img_dir in img_dirs:
+                    if img_dir.exists() and img_dir.is_dir():
+                        try:
+                            shutil.rmtree(img_dir)
+                            cleanup_count["images"] += 1
+                            logger.debug("Deleted image directory: %s", img_dir.name)
+                        except Exception as exc:
+                            logger.warning("Failed to delete %s: %s", img_dir.name, exc)
+
+            logger.info(
+                "Batch %s: Cleanup complete - deleted %s markdown files, %s image directories",
+                batch_num,
+                cleanup_count["md"],
+                cleanup_count["images"],
+            )
+
+        # Run image workflow for this batch
+        if not args.skip_images:
+            logger.info("Batch %s: Starting image description workflow", batch_num)
+            batch_session_id = f"{uuid4().hex[:8]}-{batch_num:03d}"
+            workflow = ImageDescriptionWorkflow(
+                images_dir=args.images_dir,
+                processed_markdown_dir=args.output_folder,
+                enhanced_markdown_dir=args.enhanced_dir,
+                generated_root=args.generated_root,
+                gemini_model=args.gemini_model,
+                gcs_input_prefix=args.gcs_input_prefix,
+                gcs_output_prefix=args.gcs_output_prefix,
+                batch_prefix=args.batch_prefix,
+                image_format=args.image_format,
+                aws_profile=getattr(args, "aws_profile", None),
+            )
+
+            upload_summary = await workflow.run(
+                session_id=batch_session_id,
+                batch_size=args.image_batch_size,
+                system_instruction=args.image_system_instruction,
+                wait_seconds=args.image_wait_seconds,
+                max_retries=args.image_max_retries,
+                upload=not args.skip_image_upload,
+            )
+            logger.info(
+                "Batch %s: Image upload summary: uploaded=%s skipped=%s failed=%s",
+                batch_num,
+                upload_summary.uploaded,
+                upload_summary.skipped,
+                upload_summary.failed,
+            )
+
+            # Clean up batch files for this session
+            logger.info("Batch %s: Cleaning up Gemini batch files for session %s", batch_num, batch_session_id)
+            cleanup_count_batch = {"batch_files": 0, "description_files": 0}
+
+            # Clean up batch input files
+            batch_dir = args.generated_root / args.batch_prefix
+            if batch_dir.exists():
+                for batch_file in batch_dir.glob(f"*{batch_session_id}*.jsonl"):
+                    try:
+                        batch_file.unlink()
+                        cleanup_count_batch["batch_files"] += 1
+                        logger.debug("Deleted batch file: %s", batch_file.name)
+                    except Exception as exc:
+                        logger.warning("Failed to delete %s: %s", batch_file.name, exc)
+
+            # Clean up description result files
+            descriptions_dir = args.generated_root / "image_descriptions"
+            if descriptions_dir.exists():
+                for desc_file in descriptions_dir.glob(f"image_descriptions_{batch_session_id}_*.json"):
+                    try:
+                        desc_file.unlink()
+                        cleanup_count_batch["description_files"] += 1
+                        logger.debug("Deleted description file: %s", desc_file.name)
+                    except Exception as exc:
+                        logger.warning("Failed to delete %s: %s", desc_file.name, exc)
+
+            logger.info(
+                "Batch %s: Cleaned up %s batch files, %s description files",
+                batch_num,
+                cleanup_count_batch["batch_files"],
+                cleanup_count_batch["description_files"],
+            )
+
+    logger.info("\n" + "=" * 80)
+    logger.info("PIPELINE COMPLETE")
+    logger.info("Total batches: %s", batch_num)
+    logger.info("Total documents processed: %s", total_processed)
+    logger.info("Total documents uploaded: %s", total_uploaded)
+    logger.info("=" * 80)
 
 
 async def run_markdown_only(args: argparse.Namespace) -> None:
@@ -341,86 +451,25 @@ async def run_images_only(args: argparse.Namespace) -> None:
     output_dir = args.output_folder
     images_base_dir = args.images_dir
     enhanced_dir = args.enhanced_dir
+    pdf_dir = Path(args.input_folder)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     images_base_dir.mkdir(parents=True, exist_ok=True)
     enhanced_dir.mkdir(parents=True, exist_ok=True)
+    pdf_dir.mkdir(parents=True, exist_ok=True)
 
     supabase_config = SupabaseConfig.from_env()
 
-    logger.info(
-        "Fetching doc IDs missing DOCLING_IMG (range %s-%s, limit=%s)",
-        args.min_doc_id,
-        args.max_doc_id,
-        args.limit,
-    )
-
-    fetcher = DocumentFetcher(
-        config_path=args.config,
-        limit=args.limit,
-        min_doc_id=args.min_doc_id,
-        max_doc_id=args.max_doc_id,
-        run_all_images=True,
-        download_pdfs=not args.skip_pdf_download,
-    )
-    fetch_stats = await fetcher.run()
-    logger.info("Fetcher stats: %s", fetch_stats)
-
-    if args.skip_pdf_download:
-        pdf_dir = Path(args.input_folder)
-    elif hasattr(fetcher, "input_folder"):
-        pdf_dir = getattr(fetcher, "input_folder")
-    else:
-        pdf_dir = Path(args.input_folder)
-    pdf_dir.mkdir(parents=True, exist_ok=True)
-
-    doc_ids: list[int]
-    if hasattr(fetcher, "last_selected_docs"):
-        last_docs = getattr(fetcher, "last_selected_docs", [])
-        doc_ids = sorted({doc["id"] for doc in last_docs})
-    else:
-        logger.warning(
-            "DocumentFetcher missing last_selected_docs; inferring doc IDs from %s",
-            pdf_dir,
-        )
-        inferred: set[int] = set()
-        for pdf_path in pdf_dir.glob("doc_*.pdf"):
-            doc_id = _doc_id_from_filename(pdf_path)
-            if doc_id is None:
-                continue
-            if doc_id < args.min_doc_id or doc_id > args.max_doc_id:
-                continue
-            inferred.add(doc_id)
-        doc_ids = sorted(inferred)
-
-    if args.limit is not None:
-        doc_ids = doc_ids[: args.limit]
-    if args.max_docs is not None:
-        doc_ids = doc_ids[: args.max_docs]
-
-    if not doc_ids:
-        logger.info("No candidate documents after Supabase filtering; exiting")
-        return
-
-    doc_batches = [
-        doc_ids[i : i + args.doc_batch_size]
-        for i in range(0, len(doc_ids), args.doc_batch_size)
-    ]
-
-    total_batches = len(doc_batches)
-    logger.info(
-        "Processing %s batch(es) (%s documents total, batch size=%s)",
-        total_batches,
-        len(doc_ids),
-        args.doc_batch_size,
-    )
+    logger.info("=" * 80)
+    logger.info("Starting images-only pipeline with batching")
+    logger.info("Range: %s-%s, Batch size: %s", args.min_doc_id, args.max_doc_id, args.doc_batch_size)
+    logger.info("=" * 80)
 
     overall_summary = UploadSummary()
     overall_total_images = 0
     overall_processed_docs = 0
-
-    session_id = args.session_id or uuid4().hex[:8]
     base_session_id = args.session_id or uuid4().hex[:8]
+    batch_num = 0
 
     workflow = ImageDescriptionWorkflow(
         images_dir=images_base_dir,
@@ -435,17 +484,61 @@ async def run_images_only(args: argparse.Namespace) -> None:
         aws_profile=getattr(args, "aws_profile", None),
     )
 
-    async def process_batch(batch_doc_ids: list[int], batch_index: int) -> tuple[UploadSummary, int, int]:
-        logger.info(
-            "\n=== Images batch %s/%s (%s docs) ===",
-            batch_index,
-            total_batches,
-            len(batch_doc_ids),
+    while True:
+        batch_num += 1
+        logger.info("\n" + "=" * 80)
+        logger.info("BATCH %s: Fetching next %s documents", batch_num, args.doc_batch_size)
+        logger.info("=" * 80)
+
+        fetcher = DocumentFetcher(
+            config_path=args.config,
+            limit=args.doc_batch_size,  # Fetch batch_size docs at a time
+            min_doc_id=args.min_doc_id,
+            max_doc_id=args.max_doc_id,
+            run_all_images=True,
+            download_pdfs=not args.skip_pdf_download,
         )
+        fetch_stats = await fetcher.run()
+        logger.info(
+            "Batch %s: Fetched (selected=%s, downloaded=%s)",
+            batch_num,
+            fetch_stats.documents_selected,
+            fetch_stats.documents_downloaded,
+        )
+
+        if fetch_stats.documents_selected == 0:
+            logger.info("Batch %s: No more documents to process in range", batch_num)
+            break
+
+        # Get doc IDs from this batch
+        doc_ids: list[int]
+        if hasattr(fetcher, "last_selected_docs"):
+            last_docs = getattr(fetcher, "last_selected_docs", [])
+            doc_ids = sorted({doc["id"] for doc in last_docs})
+        else:
+            logger.warning(
+                "DocumentFetcher missing last_selected_docs; inferring doc IDs from %s",
+                pdf_dir,
+            )
+            inferred: set[int] = set()
+            for pdf_path in pdf_dir.glob("doc_*.pdf"):
+                doc_id = _doc_id_from_filename(pdf_path)
+                if doc_id is None:
+                    continue
+                if doc_id < args.min_doc_id or doc_id > args.max_doc_id:
+                    continue
+                inferred.add(doc_id)
+            doc_ids = sorted(inferred)
+
+        if not doc_ids:
+            logger.warning("Batch %s: No candidate documents; continuing", batch_num)
+            continue
+
+        logger.info("Batch %s: Processing %s documents", batch_num, len(doc_ids))
 
         pdf_map: dict[int, Path] = {}
         missing_pdfs: list[int] = []
-        for doc_id in batch_doc_ids:
+        for doc_id in doc_ids:
             pdf_path = pdf_dir / f"doc_{doc_id}.pdf"
             if pdf_path.exists():
                 pdf_map[doc_id] = pdf_path
@@ -455,14 +548,14 @@ async def run_images_only(args: argparse.Namespace) -> None:
         if missing_pdfs:
             logger.warning(
                 "Batch %s missing PDFs for %s documents: %s",
-                batch_index,
+                batch_num,
                 len(missing_pdfs),
                 missing_pdfs,
             )
 
         if not pdf_map:
-            logger.warning("No PDFs available for batch %s; skipping", batch_index)
-            return UploadSummary(), 0, 0
+            logger.warning("No PDFs available for batch %s; skipping", batch_num)
+            continue
 
         downloader = DoclingMarkdownDownloader(
             output_dir=output_dir,
@@ -472,7 +565,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
         download_summary = await downloader.download(pdf_map.keys())
         logger.info(
             "Batch %s markdown download: requested=%s downloaded=%s skipped=%s missing=%s failed=%s",
-            batch_index,
+            batch_num,
             download_summary.requested,
             download_summary.downloaded,
             download_summary.skipped_existing,
@@ -481,7 +574,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
         )
         if download_summary.failed:
             for doc_id, error_msg in download_summary.failed.items():
-                logger.error("Batch %s failed markdown download doc_%s: %s", batch_index, doc_id, error_msg)
+                logger.error("Batch %s failed markdown download doc_%s: %s", batch_num, doc_id, error_msg)
 
         final_docs: list[int] = []
         for doc_id in sorted(pdf_map.keys()):
@@ -491,23 +584,23 @@ async def run_images_only(args: argparse.Namespace) -> None:
             else:
                 logger.warning(
                     "Batch %s markdown missing for doc_%s; skipping",
-                    batch_index,
+                    batch_num,
                     doc_id,
                 )
 
         if not final_docs:
-            logger.warning("Batch %s: no documents have markdown; skipping", batch_index)
-            return UploadSummary(), 0, 0
+            logger.warning("Batch %s: no documents have markdown; skipping", batch_num)
+            continue
 
         docs_with_images: list[int] = []
-        total_images = 0
+        batch_total_images = 0
 
         for doc_id in final_docs:
             pdf_path = pdf_map[doc_id]
             base_doc_dir = images_base_dir / f"doc_{doc_id}"
 
             if _directory_has_images(base_doc_dir) and not args.force_reextract:
-                logger.info("Batch %s reusing cached images for doc_%s", batch_index, doc_id)
+                logger.info("Batch %s reusing cached images for doc_%s", batch_num, doc_id)
             else:
                 if base_doc_dir.exists():
                     shutil.rmtree(base_doc_dir, ignore_errors=True)
@@ -519,25 +612,106 @@ async def run_images_only(args: argparse.Namespace) -> None:
                         base_doc_dir,
                     )
                 except Exception as exc:  # pragma: no cover - defensive logging
-                    logger.exception("Batch %s image extraction failed for doc_%s: %s", batch_index, doc_id, exc)
+                    logger.exception("Batch %s image extraction failed for doc_%s: %s", batch_num, doc_id, exc)
                     continue
 
                 if count == 0:
-                    logger.warning("Batch %s no figures found in doc_%s", batch_index, doc_id)
+                    logger.warning("Batch %s no figures found in doc_%s", batch_num, doc_id)
                     continue
-                total_images += count
+                batch_total_images += count
 
             if not _directory_has_images(base_doc_dir):
-                logger.warning("Batch %s image directory empty for doc_%s", batch_index, doc_id)
+                logger.warning("Batch %s image directory empty for doc_%s", batch_num, doc_id)
                 continue
 
             docs_with_images.append(doc_id)
 
         if not docs_with_images:
-            logger.warning("Batch %s produced no images; skipping Gemini", batch_index)
-            return UploadSummary(), 0, 0
+            logger.warning("Batch %s produced no images; skipping Gemini", batch_num)
+            continue
 
-        batch_session_id = f"{base_session_id}-{batch_index:03d}"
+        # Check if enhanced markdown already exists for all docs
+        force_reintegrate = getattr(args, "force_reintegrate", False)
+        docs_needing_integration = []
+        docs_already_integrated = []
+
+        for doc_id in docs_with_images:
+            enhanced_path = enhanced_dir / f"doc_{doc_id}.md"
+            if enhanced_path.exists() and not force_reintegrate:
+                docs_already_integrated.append(doc_id)
+            else:
+                docs_needing_integration.append(doc_id)
+
+        if docs_already_integrated:
+            logger.info(
+                "Batch %s: %s docs already have enhanced markdown (skipping Gemini)",
+                batch_num,
+                len(docs_already_integrated),
+            )
+
+        # If all docs already integrated, skip Gemini and go straight to upload
+        if not docs_needing_integration:
+            logger.info("Batch %s: all docs already integrated; skipping Gemini, proceeding to upload", batch_num)
+            if not args.skip_image_upload:
+                upload_summary = await workflow._upload_documents(docs_with_images)
+                overall_summary.uploaded += upload_summary.uploaded
+                overall_summary.skipped += upload_summary.skipped
+                overall_summary.failed += upload_summary.failed
+                overall_summary.errors.extend(upload_summary.errors)
+            overall_processed_docs += len(docs_with_images)
+
+            # Clean up batch files before continuing
+            logger.info("Batch %s: Cleaning up %s processed documents", batch_num, len(docs_with_images))
+            cleanup_count = {"pdfs": 0, "md": 0, "images": 0}
+
+            for doc_id in docs_with_images:
+                # Remove PDFs
+                pdf_path = pdf_dir / f"doc_{doc_id}.pdf"
+                if pdf_path.exists():
+                    try:
+                        pdf_path.unlink()
+                        cleanup_count["pdfs"] += 1
+                    except Exception as exc:
+                        logger.warning("Failed to delete %s: %s", pdf_path.name, exc)
+
+                # Remove markdown files
+                md_files = [
+                    output_dir / f"doc_{doc_id}.md",
+                    output_dir / f"{doc_id}.md",
+                ]
+                for md_file in md_files:
+                    if md_file.exists():
+                        try:
+                            md_file.unlink()
+                            cleanup_count["md"] += 1
+                        except Exception as exc:
+                            logger.warning("Failed to delete %s: %s", md_file.name, exc)
+
+                # Remove image directories
+                img_dirs = [
+                    images_base_dir / f"doc_{doc_id}",
+                    images_base_dir / str(doc_id),
+                ]
+                for img_dir in img_dirs:
+                    if img_dir.exists() and img_dir.is_dir():
+                        try:
+                            shutil.rmtree(img_dir)
+                            cleanup_count["images"] += 1
+                        except Exception as exc:
+                            logger.warning("Failed to delete %s: %s", img_dir.name, exc)
+
+            logger.info(
+                "Batch %s: Cleanup complete - deleted %s PDFs, %s markdown files, %s image directories",
+                batch_num,
+                cleanup_count["pdfs"],
+                cleanup_count["md"],
+                cleanup_count["images"],
+            )
+            continue
+
+        # Run Gemini workflow only for docs needing integration
+        logger.info("Batch %s: running Gemini for %s docs", batch_num, len(docs_needing_integration))
+        batch_session_id = f"{base_session_id}-{batch_num:03d}"
         upload_summary = await workflow.run(
             session_id=batch_session_id,
             batch_size=args.image_batch_size,
@@ -545,40 +719,133 @@ async def run_images_only(args: argparse.Namespace) -> None:
             wait_seconds=args.image_wait_seconds,
             max_retries=args.image_max_retries,
             upload=not args.skip_image_upload,
-            allowed_doc_ids=docs_with_images,
+            allowed_doc_ids=docs_needing_integration,
+            force_reintegrate=force_reintegrate,
         )
+
+        # Upload docs that were already integrated
+        if docs_already_integrated and not args.skip_image_upload:
+            logger.info("Batch %s: uploading %s already-integrated docs", batch_num, len(docs_already_integrated))
+            already_integrated_summary = await workflow._upload_documents(docs_already_integrated)
+            upload_summary.uploaded += already_integrated_summary.uploaded
+            upload_summary.skipped += already_integrated_summary.skipped
+            upload_summary.failed += already_integrated_summary.failed
+            upload_summary.errors.extend(already_integrated_summary.errors)
 
         logger.info(
             "Batch %s upload summary: uploaded=%s skipped=%s failed=%s",
-            batch_index,
+            batch_num,
             upload_summary.uploaded,
             upload_summary.skipped,
             upload_summary.failed,
         )
 
-        return upload_summary, total_images, len(docs_with_images)
-
-    for batch_index, batch_doc_ids in enumerate(doc_batches, start=1):
-        upload_summary, batch_images, batch_doc_count = await process_batch(batch_doc_ids, batch_index)
+        # Aggregate results
         overall_summary.uploaded += upload_summary.uploaded
         overall_summary.skipped += upload_summary.skipped
         overall_summary.failed += upload_summary.failed
         overall_summary.errors.extend(upload_summary.errors)
-        overall_total_images += batch_images
-        overall_processed_docs += batch_doc_count
+        overall_total_images += batch_total_images
+        overall_processed_docs += len(docs_with_images)
 
-    logger.info(
-        "Images-only pipeline complete: %s documents processed across %s batch(es); total new images: %s",
-        overall_processed_docs,
-        total_batches,
-        overall_total_images,
-    )
+        # Clean up batch files
+        if docs_with_images:
+            logger.info("Batch %s: Cleaning up %s processed documents", batch_num, len(docs_with_images))
+            cleanup_count = {"pdfs": 0, "md": 0, "images": 0}
+
+            for doc_id in docs_with_images:
+                # Remove PDFs
+                pdf_path = pdf_dir / f"doc_{doc_id}.pdf"
+                if pdf_path.exists():
+                    try:
+                        pdf_path.unlink()
+                        cleanup_count["pdfs"] += 1
+                        logger.debug("Deleted PDF: %s", pdf_path.name)
+                    except Exception as exc:
+                        logger.warning("Failed to delete %s: %s", pdf_path.name, exc)
+
+                # Remove markdown files
+                md_files = [
+                    output_dir / f"doc_{doc_id}.md",
+                    output_dir / f"{doc_id}.md",
+                ]
+                for md_file in md_files:
+                    if md_file.exists():
+                        try:
+                            md_file.unlink()
+                            cleanup_count["md"] += 1
+                            logger.debug("Deleted markdown: %s", md_file.name)
+                        except Exception as exc:
+                            logger.warning("Failed to delete %s: %s", md_file.name, exc)
+
+                # Remove image directories
+                img_dirs = [
+                    images_base_dir / f"doc_{doc_id}",
+                    images_base_dir / str(doc_id),
+                ]
+                for img_dir in img_dirs:
+                    if img_dir.exists() and img_dir.is_dir():
+                        try:
+                            shutil.rmtree(img_dir)
+                            cleanup_count["images"] += 1
+                            logger.debug("Deleted image directory: %s", img_dir.name)
+                        except Exception as exc:
+                            logger.warning("Failed to delete %s: %s", img_dir.name, exc)
+
+            logger.info(
+                "Batch %s: Cleanup complete - deleted %s PDFs, %s markdown files, %s image directories",
+                batch_num,
+                cleanup_count["pdfs"],
+                cleanup_count["md"],
+                cleanup_count["images"],
+            )
+
+        # Clean up Gemini batch files for this session
+        if docs_needing_integration:
+            logger.info("Batch %s: Cleaning up Gemini batch files for session %s", batch_num, batch_session_id)
+            cleanup_count_batch = {"batch_files": 0, "description_files": 0}
+
+            # Clean up batch input files
+            batch_dir = args.generated_root / args.batch_prefix
+            if batch_dir.exists():
+                for batch_file in batch_dir.glob(f"*{batch_session_id}*.jsonl"):
+                    try:
+                        batch_file.unlink()
+                        cleanup_count_batch["batch_files"] += 1
+                        logger.debug("Deleted batch file: %s", batch_file.name)
+                    except Exception as exc:
+                        logger.warning("Failed to delete %s: %s", batch_file.name, exc)
+
+            # Clean up description result files
+            descriptions_dir = args.generated_root / "image_descriptions"
+            if descriptions_dir.exists():
+                for desc_file in descriptions_dir.glob(f"image_descriptions_{batch_session_id}_*.json"):
+                    try:
+                        desc_file.unlink()
+                        cleanup_count_batch["description_files"] += 1
+                        logger.debug("Deleted description file: %s", desc_file.name)
+                    except Exception as exc:
+                        logger.warning("Failed to delete %s: %s", desc_file.name, exc)
+
+            logger.info(
+                "Batch %s: Cleaned up %s batch files, %s description files",
+                batch_num,
+                cleanup_count_batch["batch_files"],
+                cleanup_count_batch["description_files"],
+            )
+
+    logger.info("\n" + "=" * 80)
+    logger.info("IMAGES-ONLY PIPELINE COMPLETE")
+    logger.info("Total batches: %s", batch_num)
+    logger.info("Total documents processed: %s", overall_processed_docs)
+    logger.info("Total new images extracted: %s", overall_total_images)
     logger.info(
         "Overall upload summary: uploaded=%s skipped=%s failed=%s",
         overall_summary.uploaded,
         overall_summary.skipped,
         overall_summary.failed,
     )
+    logger.info("=" * 80)
 
 
 async def run_integrate_images(args: argparse.Namespace) -> None:
@@ -731,6 +998,7 @@ async def run_integrate_images(args: argparse.Namespace) -> None:
         workflow._integrate_descriptions,
         descriptions_dir,
         doc_ids,
+        getattr(args, "force_reintegrate", False),
     )
 
     logger.info(
@@ -765,13 +1033,13 @@ def build_parser() -> argparse.ArgumentParser:
     full_parser = subparsers.add_parser("full", help="Run fetch + markdown conversion pipeline")
     full_parser.add_argument("min_doc_id", type=int, help="Minimum document ID to process")
     full_parser.add_argument("max_doc_id", type=int, help="Maximum document ID to process")
-    full_parser.add_argument("limit", type=int, nargs="?", default=None, help="Maximum number of documents to process (optional)")
+    full_parser.add_argument("doc_batch_size", type=int, nargs="?", default=10, help="Number of documents to fetch and process per batch (default: 10)")
     full_parser.add_argument("--config", type=Path, default=CONFIGS_DIR / "config.yaml")
     full_parser.add_argument("--randomize", action="store_true")
     full_parser.add_argument("--random-seed", type=int, default=42)
     full_parser.add_argument("--run-all-images", action="store_true")
     full_parser.add_argument("--batch-size", type=int, default=1)
-    full_parser.add_argument("--chunk-page-limit", type=int, default=50)
+    full_parser.add_argument("--chunk-page-limit", type=int, default=30)
     full_parser.add_argument("--input-folder", type=Path, default=DATA_DIR / "to_process")
     full_parser.add_argument("--output-folder", type=Path, default=DATA_DIR / "processed")
     full_parser.add_argument("--images-dir", type=Path, default=DATA_DIR / "images")
@@ -800,7 +1068,7 @@ def build_parser() -> argparse.ArgumentParser:
     markdown_parser.add_argument("--input-folder", type=Path, default=DATA_DIR / "to_process")
     markdown_parser.add_argument("--output-folder", type=Path, default=DATA_DIR / "processed")
     markdown_parser.add_argument("--batch-size", type=int, default=1)
-    markdown_parser.add_argument("--chunk-page-limit", type=int, default=50)
+    markdown_parser.add_argument("--chunk-page-limit", type=int, default=30)
     markdown_parser.add_argument("--max-docs", type=int, default=None)
     markdown_parser.add_argument("--cpu", action="store_true", help="Force CPU mode")
     markdown_parser.add_argument("--extract-images", action="store_true", help="Extract images during conversion")
@@ -940,6 +1208,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-extract images even if cached images already exist",
     )
     images_parser.add_argument(
+        "--force-reintegrate",
+        action="store_true",
+        help="Re-integrate descriptions even if enhanced markdown already exists",
+    )
+    images_parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU mode (disable GPU even if available)",
+    )
+    images_parser.add_argument(
         "--max-docs",
         type=int,
         default=None,
@@ -1002,6 +1280,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--download",
         action="store_true",
         help="Download results from GCS before integrating",
+    )
+    integrate_parser.add_argument(
+        "--force-reintegrate",
+        action="store_true",
+        help="Re-integrate descriptions even if enhanced markdown already exists",
     )
     integrate_parser.add_argument(
         "--skip-upload",

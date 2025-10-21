@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROFILE=""
+CPU_MODE=""
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -15,6 +16,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --profile=*)
             PROFILE="${1#*=}"
+            shift
+            ;;
+        --cpu)
+            CPU_MODE="true"
             shift
             ;;
         --)
@@ -55,5 +60,8 @@ if [ -n "$PROFILE" ]; then
     CMD+=("--aws-profile" "$PROFILE")
 fi
 CMD+=("markdown" "$@")
+if [ -n "$CPU_MODE" ]; then
+    CMD+=("--cpu")
+fi
 
 exec "${CMD[@]}"

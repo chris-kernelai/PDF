@@ -220,6 +220,7 @@ class ImageDescriptionWorkflow:
         max_retries: int = 60,
         upload: bool = True,
         allowed_doc_ids: Optional[Iterable[int]] = None,
+        force_reintegrate: bool = False,
     ) -> UploadSummary:
         """Run the entire workflow. Returns upload summary."""
         validate_environment()
@@ -270,6 +271,7 @@ class ImageDescriptionWorkflow:
             self._integrate_descriptions,
             download_result.descriptions_dir,
             prep_result.doc_ids,
+            force_reintegrate,
         )
 
         summary = UploadSummary()
@@ -620,13 +622,14 @@ class ImageDescriptionWorkflow:
         self,
         descriptions_dir: Path,
         target_doc_ids: Optional[Iterable[int]] = None,
+        force_overwrite: bool = False,
     ) -> IntegrationResult:
         integrator = ImageDescriptionIntegrator(
             markdown_dir=self.processed_markdown_dir,
             output_dir=self.enhanced_markdown_dir,
             descriptions_dir=descriptions_dir,
             image_format=self.image_format,
-            overwrite=True,
+            overwrite=force_overwrite,
         )
 
         descriptions = integrator.load_all_descriptions()

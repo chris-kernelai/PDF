@@ -80,6 +80,7 @@ class DocumentFetcher:
 
         self.completed_doc_ids = self._load_completed_documents()
         self.stats = FetchStats()
+        self.last_selected_docs: List[Dict] = []
 
         self.documents_by_type: Counter[str] = Counter()
         self.documents_by_country: Counter[str] = Counter()
@@ -117,6 +118,7 @@ class DocumentFetcher:
         )
 
         selected_docs = self._select_documents(documents, existing)
+        self.last_selected_docs = selected_docs
 
         if not selected_docs:
             logger.info("No documents require processing after Supabase filtering")
