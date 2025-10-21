@@ -23,22 +23,47 @@
 #
 ################################################################################
 
+# Usage helper
+usage() {
+    cat <<'EOF'
+Usage: ./LOCAL_2_aws_helper.sh <command> [instance|ip] [args]
+
+Commands:
+  setup [instance]            Complete first-time setup
+  deploy-config [instance]    Deploy .env and GCP key
+  sync-code [instance]        Sync code changes to instance
+  connect [instance]          SSH into instance
+  upload <file> [instance]    Upload single PDF to to_process/
+  upload-dir <dir> [instance] Upload directory of PDFs
+  run [instance]              Run legacy pipeline script
+  download [instance]         Download processed results
+  logs [instance]             View processing logs
+  status [instance]           Check instance status
+  clean [instance]            Remove processed files
+
+Instances:
+  PDF (default)
+  PDF-London
+  or provide a raw IP address
+EOF
+}
+
 # Function to get instance configuration
 get_instance_config() {
     local instance=$1
     case "$instance" in
         PDF)
-            INSTANCE_IP="3.101.112.7"
+            INSTANCE_IP="204.236.163.8"
             INSTANCE_ID="i-09f9f69a561efe64c"
             INSTANCE_REGION="us-west-1"
-            PEM_KEY="PDF_key.pem"
+            PEM_KEY="workspace/configs/keys/PDF.pem"
             INSTANCE_TYPE="GPU (Tesla T4)"
             ;;
         PDF-London)
             INSTANCE_IP="35.178.204.146"
             INSTANCE_ID="i-0131ec0698e8c7bbf"
             INSTANCE_REGION="eu-west-2"
-            PEM_KEY="PDF-London.pem"
+            PEM_KEY="workspace/configs/keys/PDF-London.pem"
             INSTANCE_TYPE="GPU (Tesla T4 London)"
             ;;
         *)
@@ -48,21 +73,33 @@ get_instance_config() {
     return 0
 }
 
-# Parse optional instance name or IP from command line
-LAST_ARG="${@: -1}"
-if [[ "$LAST_ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    # It's an IP address
-    INSTANCE_IP="$LAST_ARG"
-    PEM_KEY="PDF_key.pem"  # Default key for IP-based access
-    INSTANCE_TYPE="Custom"
-    # Remove IP from arguments
-    set -- "${@:1:$(($#-1))}"
-elif get_instance_config "$LAST_ARG"; then
-    # It's a named instance - config already set by function
-    # Remove instance name from arguments
-    set -- "${@:1:$(($#-1))}"
+if [ $# -lt 1 ]; then
+    usage
+    exit 1
+fi
+
+COMMAND="$1"
+shift
+
+INSTANCE_ARG=""
+if [ $# -gt 0 ]; then
+    if [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || get_instance_config "$1" >/dev/null 2>&1; then
+        INSTANCE_ARG="$1"
+        shift
+    fi
+fi
+
+if [[ -n "$INSTANCE_ARG" ]]; then
+    if [[ "$INSTANCE_ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        INSTANCE_IP="$INSTANCE_ARG"
+        INSTANCE_ID=""
+        INSTANCE_REGION=""
+        PEM_KEY="workspace/configs/keys/PDF.pem"
+        INSTANCE_TYPE="Custom"
+    else
+        get_instance_config "$INSTANCE_ARG"
+    fi
 else
-    # Default to PDF instance
     get_instance_config "PDF"
 fi
 
@@ -76,8 +113,17 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+debug() {
+    echo -e "${YELLOW}[debug]${NC} $1"
+}
+
 # Show which instance we're using
 echo -e "${BLUE}Target: ${INSTANCE_TYPE} instance @ ${INSTANCE_IP}${NC}"
+
+debug "Using PEM key path: $PEM_KEY"
+if [ -f "$PEM_KEY" ]; then
+    debug "PEM key details: $(ls -l "$PEM_KEY")"
+fi
 
 # Check PEM key exists
 if [ ! -f "$PEM_KEY" ]; then
@@ -87,7 +133,7 @@ fi
 
 chmod 400 "$PEM_KEY"
 
-case "$1" in
+case "$COMMAND" in
     connect)
         echo -e "${BLUE}Connecting to AWS instance...${NC}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "
@@ -107,37 +153,39 @@ case "$1" in
         ;;
 
     upload)
-        if [ -z "$2" ]; then
+        if [ $# -lt 1 ]; then
             echo -e "${RED}❌ Please specify a file to upload${NC}"
             echo "Usage: $0 upload <file.pdf>"
             exit 1
         fi
 
-        if [ ! -f "$2" ]; then
-            echo -e "${RED}❌ File not found: $2${NC}"
+        UPLOAD_FILE="$1"
+        if [ ! -f "$UPLOAD_FILE" ]; then
+            echo -e "${RED}❌ File not found: $UPLOAD_FILE${NC}"
             exit 1
         fi
 
-        echo -e "${BLUE}Uploading $2 to instance...${NC}"
-        scp -i "$PEM_KEY" "$2" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/to_process/"
+        echo -e "${BLUE}Uploading $UPLOAD_FILE to instance...${NC}"
+        scp -i "$PEM_KEY" "$UPLOAD_FILE" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/data/to_process/"
         echo -e "${GREEN}✅ Upload complete${NC}"
         ;;
 
     upload-dir)
-        if [ -z "$2" ]; then
+        if [ $# -lt 1 ]; then
             echo -e "${RED}❌ Please specify a directory to upload${NC}"
             echo "Usage: $0 upload-dir <directory>"
             exit 1
         fi
 
-        if [ ! -d "$2" ]; then
-            echo -e "${RED}❌ Directory not found: $2${NC}"
+        UPLOAD_DIR="$1"
+        if [ ! -d "$UPLOAD_DIR" ]; then
+            echo -e "${RED}❌ Directory not found: $UPLOAD_DIR${NC}"
             exit 1
         fi
 
-        echo -e "${BLUE}Uploading PDFs from $2 to instance...${NC}"
-        scp -i "$PEM_KEY" "$2"/*.pdf "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/data/to_process/" 2>/dev/null || {
-            echo -e "${RED}❌ No PDF files found in $2${NC}"
+        echo -e "${BLUE}Uploading PDFs from $UPLOAD_DIR to instance...${NC}"
+        scp -i "$PEM_KEY" "$UPLOAD_DIR"/*.pdf "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/data/to_process/" 2>/dev/null || {
+            echo -e "${RED}❌ No PDF files found in $UPLOAD_DIR${NC}"
             exit 1
         }
         echo -e "${GREEN}✅ Upload complete${NC}"
@@ -177,27 +225,42 @@ case "$1" in
     sync-code)
         echo -e "${BLUE}Syncing code changes to instance...${NC}"
 
-        # Sync Python scripts (excluding venv, data, .generated)
-        scp -i "$PEM_KEY" *.py "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        FILES_TO_COPY=(
+            "run_pipeline.py"
+            "run_pipeline.sh"
+            "run_pipeline_md_only.sh"
+            "run_pipeline_images_only.sh"
+        )
 
-        # Sync shell scripts
-        scp -i "$PEM_KEY" *.sh "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        for file in "${FILES_TO_COPY[@]}"; do
+            if [ -f "$file" ]; then
+                debug "Copying $file"
+                scp -i "$PEM_KEY" "$file" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            fi
+        done
 
-        # Sync workspace directories
+        SSH_TARGET="${INSTANCE_USER}@${INSTANCE_IP}"
+        SYNC_OPTS=(-az --delete -e "ssh -i $PEM_KEY")
+
         if [ -d "workspace/src" ]; then
-            scp -i "$PEM_KEY" -r workspace/src "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/"
+            debug "Syncing workspace/src"
+            rsync "${SYNC_OPTS[@]}" --exclude '__pycache__' --exclude '*.pyc' workspace/src/ "${SSH_TARGET}:${REMOTE_DIR}/workspace/src/"
         fi
+
         if [ -d "workspace/scripts" ]; then
-            scp -i "$PEM_KEY" -r workspace/scripts "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/"
+            debug "Syncing workspace/scripts"
+            rsync "${SYNC_OPTS[@]}" --include '*/' --include '*.py' --include '*.sh' --exclude '*' workspace/scripts/ "${SSH_TARGET}:${REMOTE_DIR}/workspace/scripts/"
         fi
+
         if [ -d "workspace/configs" ]; then
-            scp -i "$PEM_KEY" -r workspace/configs "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/"
+            debug "Syncing workspace/configs"
+            rsync "${SYNC_OPTS[@]}" workspace/configs/ "${SSH_TARGET}:${REMOTE_DIR}/workspace/configs/"
         fi
 
-        # Make scripts executable
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod +x *.sh"
+        debug "Setting execute permissions on remote wrappers"
+        ssh -i "$PEM_KEY" "$SSH_TARGET" "cd $REMOTE_DIR && chmod +x run_pipeline.sh run_pipeline_md_only.sh run_pipeline_images_only.sh 2>/dev/null || true"
 
-        echo -e "${GREEN}✅ Code synced (venv, data, and .generated excluded)${NC}"
+        echo -e "${GREEN}✅ Code synced (excludes data and venv)${NC}"
         ;;
 
     deploy-config)
@@ -209,14 +272,13 @@ case "$1" in
             exit 1
         fi
 
-        # Copy .env
-        echo "Copying .env..."
+        debug "Copying .env to remote"
         scp -i "$PEM_KEY" .env "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
 
         # Copy GCP service account key if it exists
         GCP_KEY="$HOME/gcp-service-account-key.json"
         if [ -f "$GCP_KEY" ]; then
-            echo "Copying GCP service account key..."
+            debug "Copying GCP service account key"
             scp -i "$PEM_KEY" "$GCP_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
         else
             echo -e "${YELLOW}⚠️  GCP service account key not found at $GCP_KEY${NC}"
@@ -225,18 +287,19 @@ case "$1" in
 
         # Copy config.yaml if it exists
         if [ -f "workspace/configs/config.yaml" ]; then
-            echo "Copying config.yaml..."
+            debug "Copying config.yaml"
             scp -i "$PEM_KEY" workspace/configs/config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/configs/"
         fi
 
         # Copy requirements.txt if it exists
         if [ -f "workspace/configs/requirements.txt" ]; then
-            echo "Copying requirements.txt..."
+            debug "Copying requirements.txt"
             scp -i "$PEM_KEY" workspace/configs/requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/configs/"
         fi
 
         # Fix GOOGLE_APPLICATION_CREDENTIALS path in remote .env and authenticate gcloud
         echo "Fixing GOOGLE_APPLICATION_CREDENTIALS path and authenticating gcloud..."
+        debug "Executing remote gcloud auth script"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 if [ -f ".env" ] && [ -f "gcp-service-account-key.json" ]; then
@@ -250,6 +313,7 @@ fi
 ENDSSH
 
         # Set proper permissions on remote
+        debug "Setting permissions on remote secrets"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "cd $REMOTE_DIR && chmod 600 .env gcp-service-account-key.json 2>/dev/null || true"
 
         echo -e "${GREEN}✅ Configuration deployed${NC}"
@@ -266,7 +330,9 @@ ENDSSH
 
         # First, create the directory on AWS
         echo -e "${BLUE}Step 1: Creating directory on AWS...${NC}"
+        debug "Running: ssh -i $PEM_KEY ${INSTANCE_USER}@${INSTANCE_IP} mkdir -p ~/pdf_pipeline/workspace/{configs,data}"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ~/pdf_pipeline/workspace/{configs,data}"
+        debug "Running: ssh -i $PEM_KEY ${INSTANCE_USER}@${INSTANCE_IP} mkdir -p workspace data subdirs"
         ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ~/pdf_pipeline/workspace/data/{to_process,processed,processed_raw,processed_images,processed_images_raw,images,pdfs_processed} ~/pdf_pipeline/workspace/logs ~/pdf_pipeline/workspace/state ~/pdf_pipeline/workspace/.generated"
         echo -e "${GREEN}✅ Directory created${NC}"
 

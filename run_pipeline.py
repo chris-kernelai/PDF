@@ -14,8 +14,13 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 WORKSPACE_ROOT = BASE_DIR / "workspace"
-sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
-WORKSPACE_ROOT.mkdir(exist_ok=True)
+WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
+SRC_PATH = WORKSPACE_ROOT / "src"
+if SRC_PATH.exists():
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+else:
+    print(f"Warning: workspace/src not found at {SRC_PATH}", file=sys.stderr)
 
 from src.pipeline import DocumentFetcher, ImageDescriptionWorkflow
 from src.pipeline.docling_batch_converter import convert_folder
@@ -23,7 +28,7 @@ from src.pipeline.image_extraction import (
     extract_images_from_directory,
     extract_images_from_pdf,
 )
-from src.pipeline.paths import CONFIGS_DIR, DATA_DIR, LOGS_DIR, STATE_DIR
+from src.pipeline.paths import CONFIGS_DIR, DATA_DIR, LOGS_DIR, STATE_DIR, WORKSPACE_ROOT as PATH_WORKSPACE_ROOT
 
 load_dotenv()
 
@@ -45,7 +50,7 @@ def _ensure_data_dirs() -> None:
         DATA_DIR / "processed_images_raw",
         LOGS_DIR,
         STATE_DIR,
-        WORKSPACE_ROOT / ".generated",
+        PATH_WORKSPACE_ROOT / ".generated",
     ]
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
@@ -146,6 +151,8 @@ async def run_images_only(args: argparse.Namespace) -> None:
     configure_logging()
     logger = logging.getLogger("pipeline.images")
 
+    _ensure_data_dirs()
+
     if args.pdf:
         total = 0
         for pdf_path in args.pdf:
@@ -199,42 +206,3 @@ def build_parser() -> argparse.ArgumentParser:
     full_parser.add_argument("--fetch-only", action="store_true", help="Skip conversion stage")
     full_parser.add_argument("--skip-images", action="store_true", help="Skip Gemini image workflow")
     full_parser.add_argument("--skip-image-upload", action="store_true", help="Skip uploading Supabase representations")
-    full_parser.set_defaults(func=run_full)
-
-    markdown_parser = subparsers.add_parser("markdown", help="Run markdown conversion only")
-    markdown_parser.add_argument("input_folder", type=Path)
-    markdown_parser.add_argument("output_folder", type=Path)
-    markdown_parser.add_argument("--batch-size", type=int, default=1)
-    markdown_parser.add_argument("--chunk-page-limit", type=int, default=50)
-    markdown_parser.add_argument("--max-docs", type=int, default=None)
-    markdown_parser.add_argument("--cpu", action="store_true")
-    markdown_parser.add_argument("--extract-images", action="store_true")
-    markdown_parser.set_defaults(func=run_markdown_only)
-
-    images_parser = subparsers.add_parser("images", help="Extract images only using Docling")
-    images_parser.add_argument("--input-dir", type=Path, default=DATA_DIR / "to_process")
-    images_parser.add_argument("--output-dir", type=Path, default=DATA_DIR / "images_only")
-    images_parser.add_argument("--pdf", type=Path, action="append", help="Specific PDF(s) to process")
-    images_parser.set_defaults(func=run_images_only)
-
-    return parser
-
-
-async def dispatch(args: argparse.Namespace) -> None:
-    func: Callable[[argparse.Namespace], Awaitable[None]] = args.func
-    await func(args)
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        asyncio.run(dispatch(args))
-        return 0
-    except Exception as exc:
-        logging.exception("Pipeline run failed: %s", exc)
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
