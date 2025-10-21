@@ -3,11 +3,7 @@
 gemini_batch_monitor.py
 
 Reads batch_jobs_tracking.json (created by gemini_batch_uploader.py)
-and checks the status of each Gemini batch job.
-
-Usage:
-    python gemini_batch_monitor.py developer
-    python gemini_batch_monitor.py vertex
+and checks the status of each Vertex Gemini batch job.
 """
 
 import argparse
@@ -15,8 +11,9 @@ import json
 import os
 import sys
 
-from google import genai
 from dotenv import load_dotenv
+
+from src.pipeline import init_client, validate_environment
 
 # Load environment
 load_dotenv()
@@ -24,103 +21,10 @@ load_dotenv()
 TRACKING_FILE = ".generated/image_description_batches/batch_jobs_tracking.json"
 
 
-def validate_environment(mode: str) -> None:
-    """
-    Validate that required environment variables are set before proceeding.
-
-    Args:
-        mode: 'developer' or 'vertex'
-
-    Raises:
-        SystemExit: If validation fails
-    """
-    errors = []
-
-    if mode == "developer":
-        if not os.environ.get("GEMINI_API_KEY"):
-            errors.append("❌ GEMINI_API_KEY not set (required for Developer mode)")
-    elif mode == "vertex":
-        # Check Google Cloud credentials
-        if not os.environ.get("GCP_PROJECT"):
-            errors.append("❌ GCP_PROJECT not set (required for Vertex AI mode)")
-        if not os.environ.get("GCP_LOCATION"):
-            errors.append("❌ GCP_LOCATION not set (required for Vertex AI mode)")
-
-        # Check if authenticated (either gcloud or service account)
-        has_gcloud_auth = False
-        has_service_account = False
-
-        # Check for service account key file
-        if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
-            key_file = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-            if os.path.exists(key_file):
-                has_service_account = True
-
-        # Check for gcloud authentication
-        if not has_service_account:
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if result.stdout.strip():
-                    has_gcloud_auth = True
-            except FileNotFoundError:
-                errors.append("❌ gcloud CLI not found. Install Google Cloud SDK first")
-            except Exception as e:
-                errors.append(f"⚠️  Could not verify gcloud authentication: {e}")
-
-        # Require either authentication method
-        if not has_gcloud_auth and not has_service_account:
-            errors.append("❌ No authentication found. Either:")
-            errors.append("   1. Run 'gcloud auth login', OR")
-            errors.append("   2. Set GOOGLE_APPLICATION_CREDENTIALS in .env")
-
-    if errors:
-        print("\n" + "="*60)
-        print("❌ ENVIRONMENT VALIDATION FAILED")
-        print("="*60)
-        for error in errors:
-            print(error)
-        print("\nPlease set the required environment variables and ensure you're authenticated.")
-        print("="*60 + "\n")
-        sys.exit(1)
-
-    print("✅ Environment validation passed\n")
-
-
-def init_client(mode):
-    """Initialize Gemini client in Developer or Vertex mode"""
-    if mode == "developer":
-        if not os.environ.get("GEMINI_API_KEY"):
-            raise RuntimeError("❌ GEMINI_API_KEY not found for Developer mode")
-        print("🌐 Using Developer API mode\n")
-        return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    elif mode == "vertex":
-        if not os.environ.get("GCP_PROJECT") or not os.environ.get("GCP_LOCATION"):
-            raise RuntimeError("❌ GCP_PROJECT and GCP_LOCATION required for Vertex mode")
-        print("☁️  Using Vertex AI mode\n")
-        return genai.Client(
-            vertexai=True,
-            project=os.environ["GCP_PROJECT"],
-            location=os.environ["GCP_LOCATION"],
-        )
-    else:
-        raise RuntimeError(f"❌ Invalid mode: {mode}. Use 'developer' or 'vertex'")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Monitor Gemini batch job status")
-    parser.add_argument(
-        "mode",
-        nargs="?",
-        default="vertex",
-        choices=["developer", "vertex"],
-        help="API mode: 'vertex' (default) for Vertex AI or 'developer' for Gemini Developer API",
-    )
+    parser = argparse.ArgumentParser(description="Monitor Gemini batch job status (Vertex)")
     args = parser.parse_args()
 
     if not os.path.exists(TRACKING_FILE):
@@ -151,12 +55,16 @@ def main():
         return 1
 
     # Validate environment before proceeding
-    validate_environment(args.mode)
+    try:
+        validate_environment()
+    except RuntimeError as exc:
+        print(str(exc))
+        return 1
 
     try:
-        client = init_client(args.mode)
-    except RuntimeError as e:
-        print(e)
+        client = init_client()
+    except RuntimeError as exc:
+        print(str(exc))
         return 1
 
     print("📊 Gemini Batch Job Status")
@@ -195,15 +103,9 @@ def main():
                 print(f"   Error: {job.error}")
                 any_failed = True
 
-            # Show output file location for Developer mode
-            if args.mode == "developer":
-                if hasattr(job, "output_file") and job.output_file:
-                    print(f"   Output file: {job.output_file.name}")
-
             # Show output location for Vertex mode
-            if args.mode == "vertex":
-                if hasattr(job, "dest") and hasattr(job.dest, "responses_file"):
-                    print(f"   Output: {job.dest.responses_file}")
+            if hasattr(job, "dest") and hasattr(job.dest, "responses_file"):
+                print(f"   Output: {job.dest.responses_file}")
 
         except Exception as e:
             print(f"\n❌ Failed to fetch job {i}/{len(jobs)}: {job_name}")
@@ -215,7 +117,7 @@ def main():
     if all_complete and not any_failed:
         print("✅ All batch jobs completed successfully!")
         print("\nNext step:")
-        print(f"   python image_description_batch_downloader.py {args.mode}")
+        print("   python 3d_download_batch_results.py")
     elif any_failed:
         print("❌ Some batch jobs failed or encountered errors")
     else:

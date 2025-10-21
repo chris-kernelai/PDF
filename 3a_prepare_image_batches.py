@@ -2,31 +2,25 @@
 """
 image_description_batch_from_extracted.py
 
-Create batch requests for Gemini Flash from pre-extracted images
-- Uses images already extracted by batch_docling_converter.py
-- Creates JSONL batch files for Gemini API
-- Supports both Developer API and Vertex AI formats
-
-Usage:
-    python image_description_batch_from_extracted.py developer
-    python image_description_batch_from_extracted.py vertex
-    python image_description_batch_from_extracted.py developer --batch-size 100
+Create Vertex Gemini batch JSONL files from pre-extracted images.
 """
 
 import argparse
 import base64
 import json
+import logging
 import os
 import sys
 import uuid
-from pathlib import Path
-from typing import List, Dict, Optional
-import logging
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from PIL import Image
+
+from src.pipeline import validate_environment
 
 # -------------------------------------------------------------------
 # Configuration
@@ -40,78 +34,6 @@ SESSION_ID = None
 
 
 # -------------------------------------------------------------------
-# Environment Validation
-# -------------------------------------------------------------------
-
-def validate_environment(mode: str) -> None:
-    """
-    Validate that required environment variables are set before proceeding.
-
-    Args:
-        mode: 'developer' or 'vertex'
-
-    Raises:
-        SystemExit: If validation fails
-    """
-    errors = []
-
-    if mode == "developer":
-        if not os.environ.get("GEMINI_API_KEY"):
-            errors.append("❌ GEMINI_API_KEY not set (required for Developer mode)")
-    elif mode == "vertex":
-        # Check Google Cloud credentials
-        if not os.environ.get("GCP_PROJECT"):
-            errors.append("❌ GCP_PROJECT not set (required for Vertex AI mode)")
-        if not os.environ.get("GCP_LOCATION"):
-            errors.append("❌ GCP_LOCATION not set (required for Vertex AI mode)")
-        if not os.environ.get("GCS_BUCKET"):
-            errors.append("❌ GCS_BUCKET not set (required for Vertex AI mode)")
-
-        # Check if authenticated (either gcloud or service account)
-        has_gcloud_auth = False
-        has_service_account = False
-
-        # Check for service account key file
-        if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
-            key_file = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-            if os.path.exists(key_file):
-                has_service_account = True
-
-        # Check for gcloud authentication
-        if not has_service_account:
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if result.stdout.strip():
-                    has_gcloud_auth = True
-            except FileNotFoundError:
-                errors.append("❌ gcloud CLI not found. Install Google Cloud SDK first")
-            except Exception as e:
-                errors.append(f"⚠️  Could not verify gcloud authentication: {e}")
-
-        # Require either authentication method
-        if not has_gcloud_auth and not has_service_account:
-            errors.append("❌ No authentication found. Either:")
-            errors.append("   1. Run 'gcloud auth login', OR")
-            errors.append("   2. Set GOOGLE_APPLICATION_CREDENTIALS in .env")
-
-    if errors:
-        print("\n" + "="*60)
-        print("❌ ENVIRONMENT VALIDATION FAILED")
-        print("="*60)
-        for error in errors:
-            print(error)
-        print("\nPlease set the required environment variables and ensure you're authenticated.")
-        print("="*60 + "\n")
-        sys.exit(1)
-
-    print("✅ Environment validation passed\n")
-
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -322,7 +244,6 @@ def write_batch_file(
 def process_extracted_images(
     images_folder: Path,
     output_folder: Path,
-    mode: str,
     batch_size: int = 100,
     system_instruction: Optional[str] = None,
 ) -> bool:
@@ -459,7 +380,7 @@ def process_extracted_images(
     metadata = {
         "created_at": datetime.now().isoformat(),
         "session_id": SESSION_ID,
-        "mode": mode,
+        "mode": "vertex",
         "source": "pre_extracted_images",
         "images_folder": str(images_folder),
         "total_documents": len(doc_folders),
@@ -501,13 +422,6 @@ def main():
         description="Create batch requests from pre-extracted images"
     )
     parser.add_argument(
-        "mode",
-        nargs="?",
-        default="vertex",
-        choices=["developer", "vertex"],
-        help="API mode: 'vertex' (default) for Vertex AI or 'developer' for Gemini Developer API",
-    )
-    parser.add_argument(
         "--images-folder",
         type=Path,
         default=Path("data/images"),
@@ -545,7 +459,11 @@ def main():
     SESSION_ID = args.session_id
 
     # Validate environment before proceeding
-    validate_environment(args.mode)
+    try:
+        validate_environment()
+    except RuntimeError as exc:
+        print(str(exc))
+        return 1
 
     if not args.images_folder.exists():
         print(f"❌ Images folder not found: {args.images_folder}")
@@ -556,13 +474,12 @@ def main():
     print(f"📁 Images folder: {args.images_folder}")
     print(f"📁 Output folder: {args.output_folder}")
     print(f"📦 Batch size: {args.batch_size} images")
-    print(f"🔧 Mode: {args.mode}")
+    print("🔧 Mode: vertex")
     print("=" * 60)
 
     success = process_extracted_images(
         images_folder=args.images_folder,
         output_folder=args.output_folder,
-        mode=args.mode,
         batch_size=args.batch_size,
         system_instruction=args.system_instruction,
     )

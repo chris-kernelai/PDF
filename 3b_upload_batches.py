@@ -2,16 +2,7 @@
 """
 gemini_batch_uploader.py
 
-Step 2: Uploads batch files to Gemini and creates batch jobs
-- Supports both Developer API (via api_key) and Vertex AI (via GCP project/location)
-- Uploads JSONL file (to Files API in Developer mode, or to GCS in Vertex mode)
-- Creates batch job
-- Returns job ID for monitoring
-
-Usage:
-    python gemini_batch_uploader.py developer
-    python gemini_batch_uploader.py vertex
-    python gemini_batch_uploader.py developer --batch-prefix image_description_batches
+Step 2: Upload batch JSONL files to GCS and create Vertex Gemini batch jobs.
 """
 
 import argparse
@@ -24,9 +15,10 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from google import genai
 from google.cloud import storage
 from google.genai.types import CreateBatchJobConfig
+
+from src.pipeline import init_client, validate_environment
 
 # -------------------------------------------------------------------
 # Load environment
@@ -35,85 +27,6 @@ load_dotenv()
 
 # Session ID will be set from command line argument or generated if not provided
 SESSION_ID = None
-
-
-# -------------------------------------------------------------------
-# Environment Validation
-# -------------------------------------------------------------------
-
-def validate_environment(mode: str) -> None:
-    """
-    Validate that required environment variables are set before proceeding.
-
-    Args:
-        mode: 'developer' or 'vertex'
-
-    Raises:
-        SystemExit: If validation fails
-    """
-    errors = []
-
-    if mode == "developer":
-        if not os.environ.get("GEMINI_API_KEY"):
-            errors.append("❌ GEMINI_API_KEY not set (required for Developer mode)")
-    elif mode == "vertex":
-        # Check Google Cloud credentials
-        if not os.environ.get("GCP_PROJECT"):
-            errors.append("❌ GCP_PROJECT not set (required for Vertex AI mode)")
-        if not os.environ.get("GCP_LOCATION"):
-            errors.append("❌ GCP_LOCATION not set (required for Vertex AI mode)")
-        if not os.environ.get("GCS_BUCKET"):
-            errors.append("❌ GCS_BUCKET not set (required for Vertex AI mode)")
-
-        # Check if authenticated (either gcloud or service account)
-        has_gcloud_auth = False
-        has_service_account = False
-
-        # Check for service account key file
-        if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
-            key_file = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-            if os.path.exists(key_file):
-                has_service_account = True
-
-        # Check for gcloud authentication
-        if not has_service_account:
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if result.stdout.strip():
-                    has_gcloud_auth = True
-            except FileNotFoundError:
-                errors.append("❌ gcloud CLI not found. Install Google Cloud SDK first")
-            except Exception as e:
-                errors.append(f"⚠️  Could not verify gcloud authentication: {e}")
-
-        # Require either authentication method
-        if not has_gcloud_auth and not has_service_account:
-            errors.append("❌ No authentication found. Either:")
-            errors.append("   1. Run 'gcloud auth login', OR")
-            errors.append("   2. Set GOOGLE_APPLICATION_CREDENTIALS in .env")
-
-    if errors:
-        print("\n" + "="*60)
-        print("❌ ENVIRONMENT VALIDATION FAILED")
-        print("="*60)
-        for error in errors:
-            print(error)
-        print("\nPlease set the required environment variables and ensure you're authenticated.")
-        print("="*60 + "\n")
-        sys.exit(1)
-
-    print("✅ Environment validation passed\n")
-
-
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
 
 
 def validate_jsonl_file(file_path):
@@ -141,38 +54,8 @@ def validate_jsonl_file(file_path):
         return False
 
 
-def init_client(mode):
-    """Initialize Gemini client in Developer or Vertex mode"""
-    if mode == "developer":
-        if not os.environ.get("GEMINI_API_KEY"):
-            raise RuntimeError("❌ GEMINI_API_KEY not found for Developer mode")
-        print("🌐 Using Developer API mode")
-        return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    elif mode == "vertex":
-        if not os.environ.get("GCP_PROJECT") or not os.environ.get("GCP_LOCATION"):
-            raise RuntimeError("❌ GCP_PROJECT and GCP_LOCATION required for Vertex mode")
-        print("☁️  Using Vertex AI mode")
-        return genai.Client(
-            vertexai=True,
-            project=os.environ["GCP_PROJECT"],
-            location=os.environ["GCP_LOCATION"],
-        )
-    else:
-        raise RuntimeError(f"❌ Invalid mode: {mode}. Use 'developer' or 'vertex'")
-
-
-def upload_file_developer(client, local_path):
-    """Upload file to Gemini Files API (Developer API mode)"""
-    uploaded = client.files.upload(
-        file=local_path,
-        config={"mime_type": "jsonl", "display_name": Path(local_path).name},
-    )
-    print(f"✅ Uploaded to Gemini Files API: {uploaded.name}")
-    return uploaded.name
-
-
 def upload_file_vertex(local_path, bucket_name, gcs_prefix):
-    """Upload file to GCS for Vertex mode"""
+    """Upload file to GCS."""
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     gcs_path = f"{gcs_prefix}/{Path(local_path).name}"
@@ -183,16 +66,13 @@ def upload_file_vertex(local_path, bucket_name, gcs_prefix):
     return uri
 
 
-def create_batch_job(client, mode, model, src_uri, gcs_output_uri=None):
-    """Create batch job in Developer or Vertex mode"""
-    if mode == "developer":
-        job = client.batches.create(model=model, src=src_uri)
-    else:  # Vertex
-        job = client.batches.create(
-            model=model,
-            src=src_uri,
-            config=CreateBatchJobConfig(dest=gcs_output_uri),
-        )
+def create_batch_job(client, model, src_uri, gcs_output_uri):
+    """Create a Vertex Gemini batch job."""
+    job = client.batches.create(
+        model=model,
+        src=src_uri,
+        config=CreateBatchJobConfig(dest=gcs_output_uri),
+    )
     print(f"✅ Created batch job: {job.name}")
     return job.name
 
@@ -204,13 +84,6 @@ def create_batch_job(client, mode, model, src_uri, gcs_output_uri=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Upload batch files to Gemini and create batch jobs")
-    parser.add_argument(
-        "mode",
-        nargs="?",
-        default="vertex",
-        choices=["developer", "vertex"],
-        help="API mode: 'vertex' (default) for Vertex AI or 'developer' for Gemini Developer API",
-    )
     parser.add_argument(
         "--batch-prefix",
         default="image_description_batches",
@@ -228,20 +101,24 @@ def main():
     global SESSION_ID
     SESSION_ID = args.session_id
 
-    print("🚀 Gemini Batch Uploader")
+    print("🚀 Gemini Batch Uploader (Vertex)")
     print("=" * 40)
     print(f"📁 Using batch prefix: {args.batch_prefix}")
     print(f"🔑 Session ID: {SESSION_ID}")
 
     # Validate environment before proceeding
-    validate_environment(args.mode)
+
+    try:
+        validate_environment()
+    except RuntimeError as exc:
+        print(str(exc))
+        return False
 
     # Initialize client
     try:
-        client = init_client(args.mode)
-        mode = args.mode
-    except RuntimeError as e:
-        print(e)
+        client = init_client()
+    except RuntimeError as exc:
+        print(str(exc))
         return False
 
     # Check batch folder
@@ -268,12 +145,8 @@ def main():
     gcs_input_prefix = os.environ.get("GCS_INPUT_PREFIX", "gemini_batches/input")
     gcs_output_prefix = os.environ.get("GCS_OUTPUT_PREFIX", "gemini_batches/output")
 
-    # Use Gemini 2.0 Flash stable version for both modes
-    if mode == "developer":
-        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
-    else:  # vertex
-        # For Vertex AI batch, use stable 2.0-flash-001
-        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
+    # Default Vertex batch model
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
 
     batch_jobs = []
     processed_files = []
@@ -286,16 +159,12 @@ def main():
             continue
 
         try:
-            if mode == "developer":
-                src_uri = upload_file_developer(client, batch_file)
-                job_name = create_batch_job(client, mode, model, src_uri)
-            else:
-                if not bucket_name:
-                    print("❌ Missing GCS_BUCKET for Vertex mode")
-                    return False
-                src_uri = upload_file_vertex(batch_file, bucket_name, gcs_input_prefix)
-                gcs_output_uri = f"gs://{bucket_name}/{gcs_output_prefix}/{Path(batch_file).stem}/"
-                job_name = create_batch_job(client, mode, model, src_uri, gcs_output_uri)
+            if not bucket_name:
+                print("❌ Missing GCS_BUCKET for Vertex mode")
+                return False
+            src_uri = upload_file_vertex(batch_file, bucket_name, gcs_input_prefix)
+            gcs_output_uri = f"gs://{bucket_name}/{gcs_output_prefix}/{Path(batch_file).stem}/"
+            job_name = create_batch_job(client, model, src_uri, gcs_output_uri)
 
             batch_jobs.append(job_name)
             processed_files.append(
