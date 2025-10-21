@@ -643,6 +643,8 @@ class BatchDoclingConverter:
         max_workers: int,
     ) -> List[Tuple[Path, Path, bool, str, int, int, float]]:
         results = []
+        total = len(pdf_files)
+        completed = 0
         worker = partial(
             _process_single_pdf_worker,
             output_path="",
@@ -678,6 +680,14 @@ class BatchDoclingConverter:
                 except Exception as exc:
                     self.logger.error("Error processing %s: %s", pdf_file.name, exc)
                     results.append((pdf_file, self._get_output_path(pdf_file), False, str(exc), 0, 0, 0.0))
+                finally:
+                    completed += 1
+                    self.logger.info(
+                        "Conversion progress: %s/%s (%s)",
+                        completed,
+                        total,
+                        pdf_file.name,
+                    )
 
         return results
 
@@ -686,6 +696,8 @@ class BatchDoclingConverter:
         pdf_files: List[Path],
     ) -> List[Tuple[Path, Path, bool, str, int, int, float]]:
         results = []
+        total = len(pdf_files)
+        completed = 0
         for pdf_file in pdf_files:
             result = _process_single_pdf_worker(
                 str(pdf_file),
@@ -704,6 +716,13 @@ class BatchDoclingConverter:
             )
             pdf_path = Path(result[0]) if isinstance(result[0], str) else result[0]
             results.append((pdf_path, *result[1:]))
+            completed += 1
+            self.logger.info(
+                "Conversion progress: %s/%s (%s)",
+                completed,
+                total,
+                pdf_file.name,
+            )
         return results
 
     def cleanup(self) -> None:
