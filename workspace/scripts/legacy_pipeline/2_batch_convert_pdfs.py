@@ -13,18 +13,25 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
+
 from src.pipeline.docling_batch_converter import convert_folder
+from src.pipeline.paths import DATA_DIR, LOGS_DIR, STATE_DIR
 
 load_dotenv()
 
 _shutdown_requested = False
 
 for directory in [
-    Path("data/images"),
-    Path("data/processed"),
-    Path("data/processed_raw"),
-    Path("data/processed_images"),
-    Path("data/processed_images_raw"),
+    DATA_DIR / "to_process",
+    DATA_DIR / "images",
+    DATA_DIR / "processed",
+    DATA_DIR / "processed_raw",
+    DATA_DIR / "processed_images",
+    DATA_DIR / "processed_images_raw",
+    LOGS_DIR,
+    STATE_DIR,
 ]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -51,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=2,
-        help="Number of files to process concurrently (default: 2)",
+        default=1,
+        help="Number of files to process concurrently (default: 1)",
     )
     parser.add_argument(
         "--add-page-numbers",
@@ -138,8 +145,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-page-limit",
         type=int,
-        default=30,
-        help="Split PDFs into chunks with at most this many pages before processing (0 disables chunking)",
+        default=50,
+        help="Chunk PDFs to this many pages before conversion (default: 50)",
     )
     parser.add_argument(
         "--max-docs",

@@ -19,6 +19,7 @@ from google.cloud import storage
 from google.genai.types import CreateBatchJobConfig
 
 from src.pipeline import init_client, validate_environment
+from src.pipeline.paths import DATA_DIR, WORKSPACE_ROOT
 from src.standalone_upload_representations import DocumentRepresentationUploader
 
 _INTEGRATOR_SPEC = importlib.util.spec_from_file_location(
@@ -178,10 +179,10 @@ class ImageDescriptionWorkflow:
     def __init__(
         self,
         *,
-        images_dir: Path = Path("data/images"),
-        processed_markdown_dir: Path = Path("data/processed"),
-        enhanced_markdown_dir: Path = Path("data/processed_images"),
-        generated_root: Path = Path(".generated"),
+        images_dir: Path = DATA_DIR / "images",
+        processed_markdown_dir: Path = DATA_DIR / "processed",
+        enhanced_markdown_dir: Path = DATA_DIR / "processed_images",
+        generated_root: Path = WORKSPACE_ROOT / ".generated",
         gemini_model: str = "gemini-2.0-flash-001",
         gcs_input_prefix: str = "gemini_batches/input",
         gcs_output_prefix: str = "gemini_batches/output",

@@ -4,9 +4,13 @@
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
 
 from src.pipeline.document_fetcher import DocumentFetcher
 
@@ -22,13 +26,17 @@ def configure_logging(config_path: Path) -> None:
     log_config = config.get("logging", {})
     level_name = log_config.get("level", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    log_file = log_config.get("file", "fetch_documents.log")
+    log_file = log_config.get("file", "logs/fetch_documents.log")
+    log_path = Path(log_file)
+    if not log_path.is_absolute():
+        log_path = WORKSPACE_ROOT / log_path
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(log_file),
+            logging.FileHandler(log_path),
             logging.StreamHandler(),
         ],
     )
@@ -36,7 +44,7 @@ def configure_logging(config_path: Path) -> None:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch documents for Docling processing")
-    parser.add_argument("--config", type=Path, default=Path("config.yaml"), help="Path to pipeline config YAML")
+    parser.add_argument("--config", type=Path, default=WORKSPACE_ROOT / "configs/config.yaml", help="Path to pipeline config YAML")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of documents")
     parser.add_argument("--randomize", action="store_true", help="Randomize selection before applying limit")
     parser.add_argument("--random-seed", type=int, default=42, help="Seed used when randomizing")

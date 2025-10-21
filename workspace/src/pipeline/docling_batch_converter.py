@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple, Union, Set
 from src.docling_converter import DoclingConverter
 from src.processing_logger import ProcessingLogger
 from src.pipeline import SupabaseConfig, fetch_existing_representations
+from src.pipeline.paths import DATA_DIR, LOGS_DIR, STATE_DIR
 
 __all__ = [
     "BatchDoclingConverter",
@@ -127,30 +128,38 @@ def _process_single_pdf_worker(
 
     if images_only and Path(output_path).exists():
         try:
-            import fitz
+            from docling.models import ImageExtractionConfig
+            from docling.pipeline import Pipeline
 
             start_time = time.time()
-            pdf_doc = fitz.open(pdf_file_path)
             doc_id = Path(pdf_file_path).stem.replace("doc_", "")
             images_dir = Path(images_output_dir) / f"doc_{doc_id}"
             images_dir.mkdir(parents=True, exist_ok=True)
 
-            image_count = 0
-            for page_num, page in enumerate(pdf_doc, start=1):
-                for img_index, img in enumerate(page.get_images(), start=1):
-                    xref = img[0]
-                    base_image = pdf_doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    image_ext = base_image["ext"]
-                    img_filename = f"page_{page_num:03d}_img_{img_index:02d}.{image_ext}"
-                    with open(images_dir / img_filename, "wb") as img_file:
-                        img_file.write(image_bytes)
-                    image_count += 1
+            pipeline = Pipeline(
+                steps=[
+                    (
+                        "extract_images",
+                        ImageExtractionConfig(output_dir=str(images_dir)),
+                    )
+                ]
+            )
 
-            page_count = len(pdf_doc)
-            pdf_doc.close()
+            result = pipeline.run(pdf_file_path)
+            image_artifacts = result.artifacts.get("extract_images", [])
+            image_count = len(image_artifacts) if image_artifacts else 0
+            document = getattr(result, "document", None)
+            page_count = len(list(document.pages)) if document else 0
             processing_time = time.time() - start_time
-            return (pdf_file_path, output_path, True, "", image_count, page_count, processing_time)
+            return (
+                pdf_file_path,
+                output_path,
+                True,
+                "",
+                image_count,
+                page_count,
+                processing_time,
+            )
         except Exception as exc:
             return (pdf_file_path, output_path, False, f"Image extraction failed: {exc}", 0, 0, 0.0)
 
@@ -318,12 +327,13 @@ def _process_single_pdf_worker(
 
                 shutil.rmtree(chunk_temp_dir, ignore_errors=True)
 
+            images_location = DATA_DIR / "images" / doc_id
             metadata_lines = [
                 "---",
                 f"**Document:** {pdf_file.name}",
                 f"**Pages:** {total_page_count}",
                 f"**Images Extracted:** {total_image_count}",
-                f"**Images Location:** data/images/{doc_id}/",
+                f"**Images Location:** {images_location}",
                 f"**Processing Time:** {total_processing_time:.2f} seconds",
             ]
             if chunked:
@@ -375,7 +385,7 @@ class BatchDoclingConverter:
         self,
         input_folder: Union[str, Path],
         output_folder: Union[str, Path],
-        batch_size: int = 2,
+        batch_size: int = 1,
         artifacts_path: Optional[str] = None,
         add_page_numbers: bool = False,
         remove_processed: bool = True,
@@ -416,7 +426,7 @@ class BatchDoclingConverter:
         self.chunk_page_limit = chunk_page_limit
         self.max_docs = max_docs
 
-        self.processed_tracker_file = Path("processed_documents.txt")
+        self.processed_tracker_file = STATE_DIR / "processed_documents.txt"
         self.processed_doc_ids = self._load_processed_documents()
 
         logging.basicConfig(
@@ -605,7 +615,7 @@ class BatchDoclingConverter:
             _process_single_pdf_worker,
             output_path="",
             raw_output_path="",
-            images_output_dir=str(Path("data/images")),
+            images_output_dir=str(DATA_DIR / "images"),
             use_gpu=self.use_gpu,
             table_mode=self.table_mode,
             images_scale=self.images_scale,
@@ -624,7 +634,7 @@ class BatchDoclingConverter:
                     str(pdf_file),
                     str(self._get_output_path(pdf_file)),
                     str(self._get_output_path(pdf_file).with_suffix(".raw.md")),
-                    str(Path("data/images") / f"doc_{pdf_file.stem.replace('doc_', '')}"),
+                    str((DATA_DIR / "images") / f"doc_{pdf_file.stem.replace('doc_', '')}"),
                 ): pdf_file
                 for pdf_file in pdf_files
             }
@@ -649,7 +659,7 @@ class BatchDoclingConverter:
                 str(pdf_file),
                 str(self._get_output_path(pdf_file)),
                 str(self._get_output_path(pdf_file).with_suffix(".raw.md")),
-                str(Path("data/images") / f"doc_{pdf_file.stem.replace('doc_', '')}"),
+                str((DATA_DIR / "images") / f"doc_{pdf_file.stem.replace('doc_', '')}"),
                 self.use_gpu,
                 self.table_mode,
                 self.images_scale,
@@ -678,7 +688,7 @@ class BatchDoclingConverter:
 async def convert_folder(
     input_folder: Union[str, Path],
     output_folder: Union[str, Path],
-    batch_size: int = 2,
+    batch_size: int = 1,
     add_page_numbers: bool = False,
     remove_processed: bool = True,
     use_gpu: bool = True,

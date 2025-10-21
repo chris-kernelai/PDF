@@ -14,6 +14,11 @@ import aioboto3
 import asyncpg
 from dotenv import load_dotenv
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
+
+from src.pipeline.paths import DATA_DIR
+
 load_dotenv()
 
 
@@ -36,7 +41,7 @@ class DoclingDownloader:
         }
 
         # Output directory
-        self.output_dir = Path("data/processed")
+        self.output_dir = DATA_DIR / "processed"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.session = None
@@ -233,4 +238,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

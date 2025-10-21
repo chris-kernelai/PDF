@@ -19,11 +19,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from src.pipeline.paths import LOGS_DIR
+
 
 class ProcessingLogger:
     """CSV logger for document processing pipeline"""
 
-    def __init__(self, log_file: str = "processing_log.csv"):
+    def __init__(self, log_file: str = str(LOGS_DIR / "processing_log.csv")):
         """
         Initialize the logger.
 
@@ -35,6 +37,7 @@ class ProcessingLogger:
 
     def _ensure_log_exists(self):
         """Create log file with headers if it doesn't exist"""
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         if not self.log_file.exists():
             with open(self.log_file, 'w', newline='') as f:
                 writer = csv.writer(f)

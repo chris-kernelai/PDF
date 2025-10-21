@@ -4,9 +4,15 @@ Count files in important pipeline directories and analyze processing log.
 """
 import os
 import csv
+import sys
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
+
+from src.pipeline.paths import DATA_DIR, LOGS_DIR
 
 
 def count_files_by_extension(directory):
@@ -60,7 +66,7 @@ def format_count(count_data):
     return f"{total} ({', '.join(ext_parts)})"
 
 
-def analyze_processing_log(log_path='processing_log.csv'):
+def analyze_processing_log(log_path=None):
     """
     Analyze processing log to extract timing and page count information.
 
@@ -73,6 +79,9 @@ def analyze_processing_log(log_path='processing_log.csv'):
         - successful_conversions: Number of successful conversions
         - failed_conversions: Number of failed conversions
     """
+    if log_path is None:
+        log_path = LOGS_DIR / 'processing_log.csv'
+
     if not os.path.exists(log_path):
         return None
 
@@ -143,12 +152,12 @@ def main():
 
     # Define directories to check
     directories = {
-        'PDFs to Process': 'data/to_process',
-        'Processed Markdown': 'data/processed',
-        'Raw Markdown': 'data/processed_raw',
-        'Processed PDFs (archive)': 'data/pdfs_processed',
-        'Images': 'data/images',
-        'Generated Files': '.generated',
+        'PDFs to Process': str(DATA_DIR / 'to_process'),
+        'Processed Markdown': str(DATA_DIR / 'processed'),
+        'Raw Markdown': str(DATA_DIR / 'processed_raw'),
+        'Processed PDFs (archive)': str(DATA_DIR / 'pdfs_processed'),
+        'Images': str(DATA_DIR / 'images'),
+        'Generated Files': str(WORKSPACE_ROOT / '.generated'),
     }
 
     print("=" * 70)
@@ -158,7 +167,7 @@ def main():
 
     # Print file counts for main directories
     for label, directory in directories.items():
-        if directory == 'images':
+        if directory == str(DATA_DIR / 'images'):
             # Special handling for images directory
             subdir_count = count_subdirectories(directory)
             if subdir_count is not None:
@@ -175,7 +184,7 @@ def main():
                 print(f"{'  └─ Total images':30} {total_images}")
             else:
                 print(f"{label:30} ❌ Not found")
-        elif directory == '.generated':
+        elif directory == str(WORKSPACE_ROOT / '.generated'):
             # Special handling for .generated directory
             if os.path.exists(directory):
                 print(f"{label:30}")
@@ -204,7 +213,7 @@ def main():
         print(f"{'Metadata Database':30} ❌ Not found")
 
     # Check for processing log
-    log_path = 'processing_log.csv'
+    log_path = LOGS_DIR / 'processing_log.csv'
     if os.path.exists(log_path):
         with open(log_path, 'r') as f:
             line_count = sum(1 for _ in f) - 1  # Subtract header

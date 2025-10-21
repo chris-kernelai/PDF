@@ -21,6 +21,7 @@ from .supabase import (
     fetch_doc_ids_missing_docling_img,
     fetch_existing_representations,
 )
+from .paths import LOGS_DIR, WORKSPACE_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class DocumentFetcher:
         self.run_all_images = run_all_images
         self.download_pdfs = download_pdfs
 
-        self.input_folder = Path(self.config["paths"]["input_folder"])
+        self.input_folder = self._resolve_path(self.config["paths"]["input_folder"])
         self.input_folder.mkdir(parents=True, exist_ok=True)
 
         self.supabase_config = SupabaseConfig.from_env()
@@ -124,6 +125,12 @@ class DocumentFetcher:
     # ------------------------------------------------------------------
     # Candidate selection
     # ------------------------------------------------------------------
+
+    def _resolve_path(self, relative: str) -> Path:
+        path = Path(relative)
+        if not path.is_absolute():
+            path = WORKSPACE_ROOT / path
+        return path
 
     def _load_documents_by_filters(self) -> List[Dict]:
         logger.info("Fetching documents using configured filters")
@@ -403,7 +410,7 @@ class DocumentFetcher:
         return psycopg2.connect(**self.db_config)
 
     def _load_completed_documents(self) -> Set[str]:
-        log_file = Path("processing_log.csv")
+        log_file = LOGS_DIR / "processing_log.csv"
         if not log_file.exists():
             return set()
 

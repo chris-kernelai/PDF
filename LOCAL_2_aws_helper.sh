@@ -136,7 +136,7 @@ case "$1" in
         fi
 
         echo -e "${BLUE}Uploading PDFs from $2 to instance...${NC}"
-        scp -i "$PEM_KEY" "$2"/*.pdf "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/to_process/" 2>/dev/null || {
+        scp -i "$PEM_KEY" "$2"/*.pdf "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/data/to_process/" 2>/dev/null || {
             echo -e "${RED}❌ No PDF files found in $2${NC}"
             exit 1
         }
@@ -148,30 +148,30 @@ case "$1" in
         mkdir -p ./aws_results
 
         echo "Downloading processed_images/..."
-        scp -i "$PEM_KEY" -r "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/processed_images/" ./aws_results/ 2>/dev/null || echo "No processed_images found"
+        scp -i "$PEM_KEY" -r "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/data/processed_images/" ./aws_results/processed_images 2>/dev/null || echo "No processed_images found"
 
         echo "Downloading processing_log.csv..."
-        scp -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/processing_log.csv" ./aws_results/ 2>/dev/null || echo "No processing_log.csv found"
+        scp -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/logs/processing_log.csv" ./aws_results/ 2>/dev/null || echo "No processing_log.csv found"
 
         echo "Downloading images/..."
-        scp -i "$PEM_KEY" -r "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/images/" ./aws_results/ 2>/dev/null || echo "No images found"
+        scp -i "$PEM_KEY" -r "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/data/images/" ./aws_results/images 2>/dev/null || echo "No images found"
 
         echo -e "${GREEN}✅ Results downloaded to ./aws_results/${NC}"
         ;;
 
     run)
         echo -e "${BLUE}Running pipeline on instance...${NC}"
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source venv/bin/activate && ./run_pipeline.sh"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source workspace/venv/bin/activate && ./workspace/scripts/legacy_pipeline/run_pipeline.sh"
         ;;
 
     run-md-only)
         echo -e "${BLUE}Running pipeline (MD only) on instance...${NC}"
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source venv/bin/activate && ./run_pipeline.sh --md-only"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source workspace/venv/bin/activate && ./workspace/scripts/legacy_pipeline/run_pipeline.sh --md-only"
         ;;
 
     logs)
         echo -e "${BLUE}Viewing processing logs...${NC}"
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source venv/bin/activate && python3 view_processing_log.py --summary"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" -t "cd $REMOTE_DIR && source workspace/venv/bin/activate && python3 workspace/scripts/tools/view_processing_log.py --summary"
         ;;
 
     sync-code)
@@ -183,9 +183,15 @@ case "$1" in
         # Sync shell scripts
         scp -i "$PEM_KEY" *.sh "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
 
-        # Sync src directory if it exists
-        if [ -d "src" ]; then
-            scp -i "$PEM_KEY" -r src "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+        # Sync workspace directories
+        if [ -d "workspace/src" ]; then
+            scp -i "$PEM_KEY" -r workspace/src "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/"
+        fi
+        if [ -d "workspace/scripts" ]; then
+            scp -i "$PEM_KEY" -r workspace/scripts "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/"
+        fi
+        if [ -d "workspace/configs" ]; then
+            scp -i "$PEM_KEY" -r workspace/configs "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/"
         fi
 
         # Make scripts executable
@@ -218,15 +224,15 @@ case "$1" in
         fi
 
         # Copy config.yaml if it exists
-        if [ -f "config.yaml" ]; then
+        if [ -f "workspace/configs/config.yaml" ]; then
             echo "Copying config.yaml..."
-            scp -i "$PEM_KEY" config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            scp -i "$PEM_KEY" workspace/configs/config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/configs/"
         fi
 
         # Copy requirements.txt if it exists
-        if [ -f "requirements.txt" ]; then
+        if [ -f "workspace/configs/requirements.txt" ]; then
             echo "Copying requirements.txt..."
-            scp -i "$PEM_KEY" requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            scp -i "$PEM_KEY" workspace/configs/requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/configs/"
         fi
 
         # Fix GOOGLE_APPLICATION_CREDENTIALS path in remote .env and authenticate gcloud
@@ -250,7 +256,7 @@ ENDSSH
         echo ""
         echo -e "${BLUE}Next steps:${NC}"
         echo "  1. Connect to instance: $0 connect"
-        echo "  2. Install dependencies: pip install -r requirements.txt"
+        echo "  2. Install dependencies: pip install -r workspace/configs/requirements.txt"
         echo "  3. Run pipeline: ./run_pipeline.sh <min_id> <max_id>"
         ;;
 
@@ -260,7 +266,8 @@ ENDSSH
 
         # First, create the directory on AWS
         echo -e "${BLUE}Step 1: Creating directory on AWS...${NC}"
-        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ~/pdf_pipeline"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ~/pdf_pipeline/workspace/{configs,data}"
+        ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" "mkdir -p ~/pdf_pipeline/workspace/data/{to_process,processed,processed_raw,processed_images,processed_images_raw,images,pdfs_processed} ~/pdf_pipeline/workspace/logs ~/pdf_pipeline/workspace/state ~/pdf_pipeline/workspace/.generated"
         echo -e "${GREEN}✅ Directory created${NC}"
 
         echo ""
@@ -327,16 +334,16 @@ ENDSSH
 cd ~/pdf_pipeline
 
 # Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
+if [ ! -d "workspace/venv" ]; then
     echo "Creating virtual environment..."
-    python3 -m venv venv
+    python3 -m venv workspace/venv
 fi
 
 # Activate and install dependencies
-source venv/bin/activate
+source workspace/venv/bin/activate
 echo "Installing dependencies..."
 pip install --upgrade pip -q
-pip install -r requirements.txt -q
+pip install -r workspace/configs/requirements.txt -q
 
 # Create required directories
 echo "Creating directories..."
@@ -412,7 +419,7 @@ ENDSSH
             ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 rm -rf processed/* processed_raw/* processed_images/* images/* pdfs_processed/* .generated/*
-rm -f processing_log.csv
+rm -f workspace/logs/processing_log.csv
 echo "Cleaned all processed files"
 ENDSSH
             echo -e "${GREEN}✅ Clean complete${NC}"

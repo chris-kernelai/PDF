@@ -54,7 +54,7 @@ paths:
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  file: "fetch_documents.log"
+  file: "logs/fetch_documents.log"
 
 # Processing settings
 processing:

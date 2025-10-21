@@ -151,7 +151,7 @@ case "$1" in
         scp -i "$PEM_KEY" -r "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/processed_images/" ./aws_results/ 2>/dev/null || echo "No processed_images found"
 
         echo "Downloading processing_log.csv..."
-        scp -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/processing_log.csv" ./aws_results/ 2>/dev/null || echo "No processing_log.csv found"
+        scp -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/logs/processing_log.csv" ./aws_results/ 2>/dev/null || echo "No processing_log.csv found"
 
         echo "Downloading images/..."
         scp -i "$PEM_KEY" -r "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/images/" ./aws_results/ 2>/dev/null || echo "No images found"
@@ -230,15 +230,15 @@ case "$1" in
         fi
 
         # Copy config.yaml if it exists
-        if [ -f "config.yaml" ]; then
+        if [ -f "workspace/configs/config.yaml" ]; then
             echo "Copying config.yaml..."
-            scp -i "$PEM_KEY" config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            scp -i "$PEM_KEY" workspace/configs/config.yaml "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/configs/"
         fi
 
         # Copy requirements.txt if it exists
-        if [ -f "requirements.txt" ]; then
+        if [ -f "workspace/configs/requirements.txt" ]; then
             echo "Copying requirements.txt..."
-            scp -i "$PEM_KEY" requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/"
+            scp -i "$PEM_KEY" workspace/configs/requirements.txt "${INSTANCE_USER}@${INSTANCE_IP}:${REMOTE_DIR}/workspace/configs/"
         fi
 
         # Fix GOOGLE_APPLICATION_CREDENTIALS path in remote .env and authenticate gcloud
@@ -424,7 +424,7 @@ ENDSSH
             ssh -i "$PEM_KEY" "${INSTANCE_USER}@${INSTANCE_IP}" << 'ENDSSH'
 cd ~/pdf_pipeline
 rm -rf processed/* processed_raw/* processed_images/* images/* pdfs_processed/* .generated/*
-rm -f processing_log.csv
+rm -f workspace/logs/processing_log.csv
 echo "Cleaned all processed files"
 ENDSSH
             echo -e "${GREEN}✅ Clean complete${NC}"

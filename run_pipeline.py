@@ -12,12 +12,18 @@ from typing import Awaitable, Callable
 
 from dotenv import load_dotenv
 
+BASE_DIR = Path(__file__).resolve().parent
+WORKSPACE_ROOT = BASE_DIR / "workspace"
+sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
+WORKSPACE_ROOT.mkdir(exist_ok=True)
+
 from src.pipeline import DocumentFetcher, ImageDescriptionWorkflow
 from src.pipeline.docling_batch_converter import convert_folder
 from src.pipeline.image_extraction import (
     extract_images_from_directory,
     extract_images_from_pdf,
 )
+from src.pipeline.paths import CONFIGS_DIR, DATA_DIR, LOGS_DIR, STATE_DIR
 
 load_dotenv()
 
@@ -30,13 +36,18 @@ def configure_logging(level: str = "INFO") -> None:
 
 
 def _ensure_data_dirs() -> None:
-    for directory in [
-        Path("data/images"),
-        Path("data/processed"),
-        Path("data/processed_raw"),
-        Path("data/processed_images"),
-        Path("data/processed_images_raw"),
-    ]:
+    directories = [
+        DATA_DIR / "images",
+        DATA_DIR / "to_process",
+        DATA_DIR / "processed",
+        DATA_DIR / "processed_raw",
+        DATA_DIR / "processed_images",
+        DATA_DIR / "processed_images_raw",
+        LOGS_DIR,
+        STATE_DIR,
+        WORKSPACE_ROOT / ".generated",
+    ]
+    for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -161,18 +172,18 @@ def build_parser() -> argparse.ArgumentParser:
     full_parser = subparsers.add_parser("full", help="Run fetch + markdown conversion pipeline")
     full_parser.add_argument("min_doc_id", type=int)
     full_parser.add_argument("max_doc_id", type=int)
-    full_parser.add_argument("--config", type=Path, default=Path("config.yaml"))
+    full_parser.add_argument("--config", type=Path, default=CONFIGS_DIR / "config.yaml")
     full_parser.add_argument("--limit", type=int, default=None)
     full_parser.add_argument("--randomize", action="store_true")
     full_parser.add_argument("--random-seed", type=int, default=42)
     full_parser.add_argument("--run-all-images", action="store_true")
-    full_parser.add_argument("--batch-size", type=int, default=2)
+    full_parser.add_argument("--batch-size", type=int, default=1)
     full_parser.add_argument("--chunk-page-limit", type=int, default=50)
-    full_parser.add_argument("--input-folder", type=Path, default=Path("data/to_process"))
-    full_parser.add_argument("--output-folder", type=Path, default=Path("data/processed"))
-    full_parser.add_argument("--images-dir", type=Path, default=Path("data/images"))
-    full_parser.add_argument("--enhanced-dir", type=Path, default=Path("data/processed_images"))
-    full_parser.add_argument("--generated-root", type=Path, default=Path(".generated"))
+    full_parser.add_argument("--input-folder", type=Path, default=DATA_DIR / "to_process")
+    full_parser.add_argument("--output-folder", type=Path, default=DATA_DIR / "processed")
+    full_parser.add_argument("--images-dir", type=Path, default=DATA_DIR / "images")
+    full_parser.add_argument("--enhanced-dir", type=Path, default=DATA_DIR / "processed_images")
+    full_parser.add_argument("--generated-root", type=Path, default=WORKSPACE_ROOT / ".generated")
     full_parser.add_argument("--gemini-model", type=str, default="gemini-2.0-flash-001")
     full_parser.add_argument("--gcs-input-prefix", type=str, default="gemini_batches/input")
     full_parser.add_argument("--gcs-output-prefix", type=str, default="gemini_batches/output")
@@ -193,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     markdown_parser = subparsers.add_parser("markdown", help="Run markdown conversion only")
     markdown_parser.add_argument("input_folder", type=Path)
     markdown_parser.add_argument("output_folder", type=Path)
-    markdown_parser.add_argument("--batch-size", type=int, default=2)
+    markdown_parser.add_argument("--batch-size", type=int, default=1)
     markdown_parser.add_argument("--chunk-page-limit", type=int, default=50)
     markdown_parser.add_argument("--max-docs", type=int, default=None)
     markdown_parser.add_argument("--cpu", action="store_true")
@@ -201,8 +212,8 @@ def build_parser() -> argparse.ArgumentParser:
     markdown_parser.set_defaults(func=run_markdown_only)
 
     images_parser = subparsers.add_parser("images", help="Extract images only using Docling")
-    images_parser.add_argument("--input-dir", type=Path, default=Path("data/to_process"))
-    images_parser.add_argument("--output-dir", type=Path, default=Path("data/images_only"))
+    images_parser.add_argument("--input-dir", type=Path, default=DATA_DIR / "to_process")
+    images_parser.add_argument("--output-dir", type=Path, default=DATA_DIR / "images_only")
     images_parser.add_argument("--pdf", type=Path, action="append", help="Specific PDF(s) to process")
     images_parser.set_defaults(func=run_images_only)
 

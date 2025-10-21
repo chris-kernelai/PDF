@@ -1,0 +1,509 @@
+#!/bin/bash
+
+################################################################################
+# PDF Processing Pipeline - Batch Runner
+#
+# This script runs the entire PDF processing pipeline in batches of 500 documents
+# to avoid GPU memory overflow. It processes documents within a specified ID range.
+#
+# Usage: ./run_pipeline.sh <min_doc_id> <max_doc_id> [batch_size] [--batch-size <workers>] [--background] [--skip-download] [--cpu] [--images-only] [--no-images] [--run-all-images]
+#
+# Examples:
+#   ./run_pipeline.sh 27000 30000 500                    # Run interactively
+#   ./run_pipeline.sh 27000 30000 500 --batch-size 4     # Use 4 parallel workers
+#   ./run_pipeline.sh 27000 30000 500 --background       # Run in background with nohup
+#   ./run_pipeline.sh 27000 30000 500 --skip-download    # Skip document fetching step
+#   ./run_pipeline.sh 27000 30000 500 --cpu --batch-size 8  # CPU mode with 8 workers
+#   ./run_pipeline.sh 27000 30000 500 --images-only      # Only run image processing (skip PDF conversion)
+#   ./run_pipeline.sh 27000 30000 500 --no-images        # Skip image processing, upload raw markdown
+#   ./run_pipeline.sh 0 99999999 500 --run-all-images    # Process all docs missing DOCLING_IMG (min/max ignored)
+################################################################################
+
+# Parse flags
+BACKGROUND_MODE=false
+SKIP_DOWNLOAD=false
+CPU_MODE=false
+IMAGES_ONLY=false
+NO_IMAGES=false
+RUN_ALL_IMAGES=false
+WORKERS=2  # Default to 2 workers
+ARGS=()
+
+i=1
+while [ $i -le $# ]; do
+    arg="${!i}"
+    case "$arg" in
+        --background|-b)
+            BACKGROUND_MODE=true
+            ;;
+        --skip-download|-s)
+            SKIP_DOWNLOAD=true
+            ;;
+        --cpu|-c)
+            CPU_MODE=true
+            ;;
+        --images-only|-i)
+            IMAGES_ONLY=true
+            ;;
+        --no-images|-n)
+            NO_IMAGES=true
+            ;;
+        --run-all-images)
+            RUN_ALL_IMAGES=true
+            IMAGES_ONLY=true  # Automatically enable images-only mode
+            ;;
+        --batch-size)
+            ((i++))
+            WORKERS="${!i}"
+            ;;
+        *)
+            ARGS+=("$arg")
+            ;;
+    esac
+    ((i++))
+done
+
+# Reset positional parameters to non-flag arguments
+set -- "${ARGS[@]}"
+
+# If background mode and this is the parent process, relaunch with nohup
+if [ "$BACKGROUND_MODE" = true ] && [ -z "${PIPELINE_CHILD:-}" ]; then
+    LOG_FILE="pipeline_$(date +%Y%m%d_%H%M%S).log"
+    echo "🚀 Starting pipeline in background mode..."
+    echo "📝 Log file: $LOG_FILE"
+    echo ""
+
+    # Relaunch with nohup, passing through flags
+    EXTRA_FLAGS=""
+    [ "$SKIP_DOWNLOAD" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --skip-download"
+    [ "$CPU_MODE" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --cpu"
+    [ "$RUN_ALL_IMAGES" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --run-all-images"
+    [ "$IMAGES_ONLY" = true ] && [ "$RUN_ALL_IMAGES" = false ] && EXTRA_FLAGS="$EXTRA_FLAGS --images-only"
+    [ "$NO_IMAGES" = true ] && EXTRA_FLAGS="$EXTRA_FLAGS --no-images"
+    [ "$WORKERS" != "2" ] && EXTRA_FLAGS="$EXTRA_FLAGS --batch-size $WORKERS"
+    PIPELINE_CHILD=1 nohup "$0" "$@" $EXTRA_FLAGS > "$LOG_FILE" 2>&1 &
+    PID=$!
+
+    echo "✅ Pipeline started with PID: $PID"
+    echo ""
+    echo "Monitor progress:"
+    echo "  tail -f $LOG_FILE"
+    echo ""
+    echo "Check if running:"
+    echo "  ps aux | grep $PID"
+    echo ""
+    echo "Kill if needed:"
+    echo "  kill $PID"
+    echo ""
+
+    exit 0
+fi
+
+set -e  # Exit on error
+set -u  # Exit on undefined variable
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to log messages
+log() {
+    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" >&2
+}
+
+warn() {
+    echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1"
+}
+
+info() {
+    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO:${NC} $1"
+}
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to cleanup on error
+cleanup_on_error() {
+    error "Pipeline failed. Cleaning up..."
+    
+    # Log session failure if we have a session ID
+    if [ -n "${PIPELINE_SESSION_ID:-}" ]; then
+        SESSION_ERROR_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "$SESSION_ERROR_TIME | Session: $PIPELINE_SESSION_ID | Batch: ${BATCH_NUM:-?} | Doc Range: $MIN_DOC_ID-$MAX_DOC_ID | Status: FAILED" >> "${SESSION_LOG_FILE:-pipeline_sessions.log}"
+    fi
+    
+    # Don't delete PDFs on error - we may want to retry
+    exit 1
+}
+
+trap cleanup_on_error ERR
+
+# Parse arguments
+if [ $# -lt 2 ]; then
+    error "Usage: $0 <min_doc_id> <max_doc_id> [batch_size] [--background|-b] [--skip-download|-s] [--images-only|-i]"
+    echo ""
+    echo "Examples:"
+    echo "  $0 27000 30000 500                  # Run interactively"
+    echo "  $0 27000 30000 500 --background     # Run in background with nohup"
+    echo "  $0 27000 30000 500 --skip-download  # Skip document fetching step"
+    echo "  $0 27000 30000 500 --images-only    # Only run image processing (skip PDF conversion)"
+    exit 1
+fi
+
+MIN_DOC_ID=$1
+MAX_DOC_ID=$2
+BATCH_SIZE=${3:-500}  # Default to 500 if not specified
+
+# Validate arguments
+if ! [[ "$MIN_DOC_ID" =~ ^[0-9]+$ ]] || ! [[ "$MAX_DOC_ID" =~ ^[0-9]+$ ]]; then
+    error "min_doc_id and max_doc_id must be integers"
+    exit 1
+fi
+
+if [ "$MIN_DOC_ID" -ge "$MAX_DOC_ID" ]; then
+    error "min_doc_id must be less than max_doc_id"
+    exit 1
+fi
+
+if ! [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] || [ "$BATCH_SIZE" -le 0 ]; then
+    error "batch_size must be a positive integer"
+    exit 1
+fi
+
+# Check required commands
+for cmd in python3; do
+    if ! command_exists "$cmd"; then
+        error "Required command not found: $cmd"
+        exit 1
+    fi
+done
+
+# Display configuration
+log "=========================================="
+log "PDF Processing Pipeline"
+log "=========================================="
+info "Document ID range: $MIN_DOC_ID to $MAX_DOC_ID"
+info "Batch size: $BATCH_SIZE documents"
+info "Parallel workers: $WORKERS"
+info "Mode: $([ "$CPU_MODE" = true ] && echo "CPU" || echo "GPU")"
+info "Skip download: $SKIP_DOWNLOAD"
+info "Images only: $IMAGES_ONLY"
+info "No images: $NO_IMAGES"
+info "Run all images: $RUN_ALL_IMAGES"
+info "Working directory: $(pwd)"
+log "=========================================="
+echo ""
+
+# Step 1: Fetch documents (optional)
+if [ "$SKIP_DOWNLOAD" = false ]; then
+    if [ "$RUN_ALL_IMAGES" = true ]; then
+        log "STEP 1: Fetching documents missing DOCLING_IMG representation"
+        python3 1_fetch_documents.py \
+            --min-doc-id "$MIN_DOC_ID" \
+            --max-doc-id "$MAX_DOC_ID" \
+            --run-all-images
+    else
+        log "STEP 1: Fetching documents (ID range: $MIN_DOC_ID - $MAX_DOC_ID)"
+        python3 1_fetch_documents.py \
+            --min-doc-id "$MIN_DOC_ID" \
+            --max-doc-id "$MAX_DOC_ID"
+    fi
+
+    if [ $? -ne 0 ]; then
+        error "Document fetching failed"
+        exit 1
+    fi
+
+    log "✓ Document fetching complete"
+    echo ""
+else
+    log "STEP 1: Skipping document fetch (--skip-download flag set)"
+    echo ""
+fi
+
+# Count total PDFs to process
+TOTAL_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+
+# Count markdowns that need image processing
+PROCESSED_MDS=$(find data/processed -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+PROCESSED_IMAGES_MDS=$(find data/processed_images -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+NEED_IMAGE_PROCESSING=$(( PROCESSED_MDS - PROCESSED_IMAGES_MDS ))
+
+if [ "$TOTAL_PDFS" -eq 0 ] && [ "$NEED_IMAGE_PROCESSING" -le 0 ]; then
+    warn "No PDFs found to process and no markdowns need image processing. Exiting."
+    exit 0
+fi
+
+if [ "$TOTAL_PDFS" -eq 0 ]; then
+    info "No PDFs to process, but $NEED_IMAGE_PROCESSING markdown(s) need image processing"
+    info "Skipping PDF conversion, proceeding to image description pipeline"
+fi
+
+if [ "$TOTAL_PDFS" -gt 0 ]; then
+    info "Found $TOTAL_PDFS PDFs to process"
+    NUM_BATCHES=$(( (TOTAL_PDFS + BATCH_SIZE - 1) / BATCH_SIZE ))
+    info "Will process in $NUM_BATCHES batch(es) of up to $BATCH_SIZE documents each"
+else
+    NUM_BATCHES=1  # One batch for image processing only
+fi
+echo ""
+
+# Process in batches
+BATCH_NUM=1
+PROCESSED_COUNT=0
+
+# Run at least once if there's work to do (PDFs or image processing needed)
+while [ "$PROCESSED_COUNT" -lt "$TOTAL_PDFS" ] || [ "$BATCH_NUM" -eq 1 -a "$NEED_IMAGE_PROCESSING" -gt 0 ]; do
+    log "=========================================="
+    log "BATCH $BATCH_NUM/$NUM_BATCHES"
+    log "=========================================="
+
+    # Step 2: Convert PDFs to Markdown (skip if --images-only flag is set)
+    if [ "$IMAGES_ONLY" = true ]; then
+        log "STEP 2: Skipping PDF conversion (--images-only flag set)"
+        CURRENT_BATCH_SIZE=0
+        echo ""
+    elif [ "$TOTAL_PDFS" -gt 0 ]; then
+        # Count remaining PDFs
+        REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+        CURRENT_BATCH_SIZE=$(( REMAINING_PDFS < BATCH_SIZE ? REMAINING_PDFS : BATCH_SIZE ))
+
+        info "Processing $CURRENT_BATCH_SIZE documents in this batch"
+        info "Progress: $PROCESSED_COUNT/$TOTAL_PDFS documents processed so far"
+        echo ""
+
+        log "STEP 2: Converting PDFs to Markdown (batch $BATCH_NUM)"
+
+        # Process in mini-batches of 10 to ensure GPU memory is cleared
+        MINI_BATCH_SIZE=10
+        MINI_BATCH_NUM=1
+        PDFS_PROCESSED_IN_BATCH=0
+
+        while [ "$PDFS_PROCESSED_IN_BATCH" -lt "$CURRENT_BATCH_SIZE" ]; do
+            # Count how many PDFs are left to process
+            PDFS_LEFT=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+
+            if [ "$PDFS_LEFT" -eq 0 ]; then
+                info "No more PDFs to process"
+                break
+            fi
+
+            # Determine mini-batch size (10 or remaining, whichever is smaller)
+            THIS_MINI_BATCH=$(( PDFS_LEFT < MINI_BATCH_SIZE ? PDFS_LEFT : MINI_BATCH_SIZE ))
+            REMAINING_IN_BATCH=$(( CURRENT_BATCH_SIZE - PDFS_PROCESSED_IN_BATCH ))
+            THIS_MINI_BATCH=$(( THIS_MINI_BATCH < REMAINING_IN_BATCH ? THIS_MINI_BATCH : REMAINING_IN_BATCH ))
+
+            info "Mini-batch $MINI_BATCH_NUM: Processing $THIS_MINI_BATCH PDFs (restarting Python process for GPU memory cleanup)"
+
+            GPU_FLAG=""
+            [ "$CPU_MODE" = true ] && GPU_FLAG="--no-gpu"
+
+            # Process this mini-batch - Python process exits after, clearing GPU memory
+            python3 2_batch_convert_pdfs.py \
+                data/to_process \
+                data/processed \
+                --batch-size "$WORKERS" \
+                --max-docs "$THIS_MINI_BATCH" \
+                --extract-images \
+                $GPU_FLAG
+
+            if [ $? -ne 0 ]; then
+                error "PDF conversion failed for mini-batch $MINI_BATCH_NUM of batch $BATCH_NUM"
+                exit 1
+            fi
+
+            PDFS_PROCESSED_IN_BATCH=$((PDFS_PROCESSED_IN_BATCH + THIS_MINI_BATCH))
+            MINI_BATCH_NUM=$((MINI_BATCH_NUM + 1))
+
+            info "✓ Mini-batch complete. Total processed in this batch: $PDFS_PROCESSED_IN_BATCH/$CURRENT_BATCH_SIZE"
+
+            # Brief pause to ensure cleanup
+            sleep 2
+        done
+
+        log "✓ PDF conversion complete for batch $BATCH_NUM (processed in $((MINI_BATCH_NUM - 1)) mini-batches of max 10 PDFs each)"
+        echo ""
+    else
+        log "STEP 2: Skipping PDF conversion (no PDFs to process)"
+        CURRENT_BATCH_SIZE=0
+        echo ""
+    fi
+
+    # Step 3: Image Description Pipeline (skip if --no-images flag is set)
+    if [ "$NO_IMAGES" = true ]; then
+        log "STEP 3: Skipping image description pipeline (--no-images flag set)"
+        echo ""
+    else
+        log "STEP 3: Running image description pipeline (batch $BATCH_NUM)"
+
+    # Generate unique session ID for this pipeline run
+    PIPELINE_SESSION_ID=$(python3 -c "import uuid; print(str(uuid.uuid4())[:8])")
+    log "  🔑 Pipeline Session ID: $PIPELINE_SESSION_ID"
+    
+    # Log session info to file
+    SESSION_LOG_FILE="pipeline_sessions.log"
+    SESSION_START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$SESSION_START_TIME | Session: $PIPELINE_SESSION_ID | Batch: $BATCH_NUM | Doc Range: $MIN_DOC_ID-$MAX_DOC_ID | Status: STARTED" >> "$SESSION_LOG_FILE"
+    log "  📝 Session logged to: $SESSION_LOG_FILE"
+
+    # 3a: Prepare image batches
+    log "  3a: Preparing image batches..."
+    python3 3a_prepare_image_batches.py --session-id "$PIPELINE_SESSION_ID"
+
+    # 3b: Upload batches to Gemini
+    log "  3b: Uploading batches to Gemini..."
+    python3 3b_upload_batches.py --session-id "$PIPELINE_SESSION_ID"
+
+    # 3c: Monitor batch progress (with retry)
+    log "  3c: Monitoring batch progress..."
+    MAX_RETRIES=60  # 60 retries = 60 minutes max wait
+    RETRY_COUNT=0
+    WAIT_TIME=120  # 60 seconds between checks
+
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        MONITOR_OUTPUT=$(python3 3c_monitor_batches.py 2>&1)
+        echo "$MONITOR_OUTPUT"
+
+        # Check if all jobs completed successfully
+        if echo "$MONITOR_OUTPUT" | grep -q "✅ All batch jobs completed successfully"; then
+            log "  ✓ All batch jobs completed!"
+            break
+        fi
+
+        # Check if any jobs failed
+        if echo "$MONITOR_OUTPUT" | grep -q "❌ Some batch jobs failed"; then
+            error "Some batch jobs failed"
+            exit 1
+        fi
+
+        # Jobs still processing
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            info "  Jobs still processing... waiting ${WAIT_TIME}s before retry $RETRY_COUNT/$MAX_RETRIES"
+            sleep $WAIT_TIME
+        else
+            error "Timeout waiting for batch jobs to complete after $((MAX_RETRIES * WAIT_TIME / 60)) minutes"
+            exit 1
+        fi
+    done
+
+    # 3d: Download results
+    log "  3d: Downloading batch results..."
+    python3 3d_download_batch_results.py --session-id "$PIPELINE_SESSION_ID"
+
+        log "✓ Image description pipeline complete for batch $BATCH_NUM"
+        echo ""
+    fi
+
+    # Step 4: Integrate descriptions (skip if --no-images flag is set)
+    if [ "$NO_IMAGES" = true ]; then
+        log "STEP 4: Skipping description integration (--no-images flag set)"
+        echo ""
+    else
+        log "STEP 4: Integrating image descriptions (batch $BATCH_NUM)"
+    python3 5_integrate_descriptions.py
+
+    if [ $? -ne 0 ]; then
+        error "Description integration failed for batch $BATCH_NUM"
+        exit 1
+    fi
+
+        log "✓ Description integration complete for batch $BATCH_NUM"
+        echo ""
+    fi
+
+    # Log session completion
+    SESSION_END_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$SESSION_END_TIME | Session: $PIPELINE_SESSION_ID | Batch: $BATCH_NUM | Doc Range: $MIN_DOC_ID-$MAX_DOC_ID | Status: COMPLETED" >> "$SESSION_LOG_FILE"
+
+    # Step 5: Upload to S3 and Supabase
+    log "STEP 5: Uploading to S3 and Supabase (batch $BATCH_NUM)"
+    python3 5a_upload.py
+
+    if [ $? -ne 0 ]; then
+        error "Upload failed for batch $BATCH_NUM"
+        exit 1
+    fi
+
+    log "✓ Upload complete for batch $BATCH_NUM"
+    echo ""
+
+    # Step 6: Cleanup
+    log "STEP 6: Cleaning up batch $BATCH_NUM"
+
+    # Delete .generated directory
+    if [ -d ".generated" ]; then
+        log "  Removing .generated directory..."
+        rm -rf .generated
+        log "  ✓ Removed .generated"
+    fi
+
+    # Delete images directory
+    if [ -d "data/images" ]; then
+        log "  Removing data/images directory..."
+        rm -rf data/images/*
+        log "  ✓ Cleared data/images"
+    fi
+
+    # Delete the PDFs that were just processed
+    # Only delete PDFs that have corresponding markdown files in data/processed
+    log "  Removing processed PDFs..."
+    DELETED_COUNT=0
+    for pdf in data/to_process/doc_*.pdf; do
+        if [ -f "$pdf" ]; then
+            # Extract document ID
+            DOC_ID=$(basename "$pdf" .pdf)
+            # Check if corresponding markdown exists
+            if [ -f "data/processed/${DOC_ID}.md" ]; then
+                rm -f "$pdf"
+                DELETED_COUNT=$((DELETED_COUNT + 1))
+            fi
+        fi
+    done
+    log "  ✓ Removed $DELETED_COUNT processed PDFs"
+
+    log "✓ Cleanup complete for batch $BATCH_NUM"
+    echo ""
+
+    # Update counters
+    PROCESSED_COUNT=$((PROCESSED_COUNT + CURRENT_BATCH_SIZE))
+    BATCH_NUM=$((BATCH_NUM + 1))
+
+    # If we're only doing image processing (no PDFs), exit after one iteration
+    if [ "$TOTAL_PDFS" -eq 0 ]; then
+        log "Image processing complete (no PDFs to process)!"
+        break
+    fi
+
+    # Check if there are more PDFs to process
+    REMAINING_PDFS=$(find data/to_process -name "doc_*.pdf" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$REMAINING_PDFS" -eq 0 ]; then
+        log "All PDFs processed!"
+        break
+    fi
+
+    # Brief pause between batches
+    log "Pausing 10 seconds before next batch..."
+    sleep 10
+    echo ""
+done
+
+# Final summary
+log "=========================================="
+log "PIPELINE COMPLETE"
+log "=========================================="
+info "Total documents processed: $PROCESSED_COUNT"
+info "Total batches: $BATCH_NUM"
+log "=========================================="
+echo ""
+
+log "✓ All done! Pipeline completed successfully."

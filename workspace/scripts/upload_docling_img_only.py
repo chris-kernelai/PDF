@@ -16,15 +16,21 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List
+
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from tqdm import tqdm
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(WORKSPACE_ROOT / "src"))
 
 def load_upload_config() -> Dict:
     """Load upload configuration from config.yaml"""
     try:
         import yaml
-        with open('config.yaml', 'r') as f:
+
+        config_path = WORKSPACE_ROOT / 'configs/config.yaml'
+        with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         return config.get('upload', {})
     except Exception as e:
@@ -98,7 +104,7 @@ def upload_docling_img_files(session_id: str, profile: str = None) -> bool:
     print(f"📁 Base path: {base_path}")
     
     # Find all docling_img files
-    processed_dir = Path('data/processed')
+    processed_dir = WORKSPACE_ROOT / 'data/processed'
     docling_img_files = list(processed_dir.glob('doc_*.txt'))
     
     if not docling_img_files:
