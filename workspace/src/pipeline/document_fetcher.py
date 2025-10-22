@@ -35,6 +35,11 @@ class FetchStats:
     documents_skipped_completed: int = 0
     documents_failed: int = 0
     documents_rejected_not_pdf: int = 0
+    failed_errors: List[str] = None  # List of error messages for failed downloads
+
+    def __post_init__(self):
+        if self.failed_errors is None:
+            self.failed_errors = []
 
 
 class DocumentFetcher:
@@ -262,10 +267,12 @@ class DocumentFetcher:
             reps = existing_reps.get(doc_id, set())
 
             if not self.run_all_images:
-                if "DOCLING" in reps or "DOCLING_IMG" in reps:
+                # Full run: skip if already has DOCLING representation
+                if "DOCLING" in reps:
                     self.stats.documents_skipped_existing += 1
                     continue
             else:
+                # Images-only run: skip if has DOCLING_IMG, or if doesn't have DOCLING
                 if "DOCLING_IMG" in reps:
                     self.stats.documents_skipped_existing += 1
                     continue
@@ -319,8 +326,10 @@ class DocumentFetcher:
 
                     pdf_url = url_map.get(doc_id)
                     if not pdf_url:
+                        error_msg = f"doc_{doc_id}: No download URL"
                         logger.warning("No download URL for %s", doc_id)
                         self.stats.documents_failed += 1
+                        self.stats.failed_errors.append(error_msg)
                         return
 
                     logger.info("Downloading document %s", doc_id)
@@ -328,8 +337,7 @@ class DocumentFetcher:
 
                     if saved_path:
                         self.stats.documents_downloaded += 1
-                    else:
-                        self.stats.documents_failed += 1
+                    # Note: _download_pdf will handle adding to failed_errors if needed
 
                     await asyncio.sleep(self.config["download"]["rate_limit_delay"])
 
@@ -372,9 +380,12 @@ class DocumentFetcher:
         try:
             async with session.get(pdf_url) as response:
                 if response.status != 200:
+                    error_msg = f"doc_{document_id}: HTTP {response.status}"
                     logger.error(
                         "Failed to download %s: HTTP %s", document_id, response.status
                     )
+                    self.stats.documents_failed += 1
+                    self.stats.failed_errors.append(error_msg)
                     return None
 
                 async with aiofiles.open(pdf_path, "wb") as fh:
@@ -387,9 +398,12 @@ class DocumentFetcher:
                 return None
 
             return pdf_path
-        except Exception:
+        except Exception as exc:
+            error_msg = f"doc_{document_id}: {type(exc).__name__}: {str(exc)}"
             logger.exception("Failed to download document %s", document_id)
             pdf_path.unlink(missing_ok=True)
+            self.stats.documents_failed += 1
+            self.stats.failed_errors.append(error_msg)
             return None
 
     async def _verify_pdf(self, pdf_path: Path) -> bool:

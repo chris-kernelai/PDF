@@ -92,7 +92,7 @@ async def run_full(args: argparse.Namespace) -> None:
 
     while True:
         batch_num += 1
-        logger.info("\n" + "=" * 80)
+        logger.info("\n\n\n" + "=" * 80)
         logger.info("BATCH %s STARTING", batch_num)
         logger.info("Requesting up to %s documents from range %s-%s", args.doc_batch_size, current_min_doc_id, args.max_doc_id)
         logger.info("=" * 80)
@@ -155,43 +155,76 @@ async def run_full(args: argparse.Namespace) -> None:
         )
 
         # PHASE 1: Markdown conversion
-        logger.info("\n" + "=" * 80)
+        logger.info("\n\n\n" + "=" * 80)
         logger.info("Batch %s: PHASE 1 - MARKDOWN CONVERSION", batch_num)
         logger.info("=" * 80)
 
-        # Check which docs already have markdown
+        # Check which docs already have markdown locally
         docs_needing_conversion = []
         docs_already_converted = []
 
-        logger.info("Batch %s: Checking conversion status for %s documents", batch_num, len(batch_doc_ids))
+        logger.info("Batch %s: Checking local markdown status for %s documents", batch_num, len(batch_doc_ids))
         for idx, doc_id in enumerate(batch_doc_ids, 1):
             md_path = args.output_folder / f"doc_{doc_id}.md"
             if md_path.exists():
                 docs_already_converted.append(doc_id)
                 logger.info(
-                    "Batch %s: [%s/%s] doc_%s - markdown exists, skipping conversion",
+                    "Batch %s: [%s/%s] doc_%s - markdown exists locally, skipping conversion",
                     batch_num,
                     idx,
                     len(batch_doc_ids),
                     doc_id,
                 )
             else:
-                docs_needing_conversion.append(doc_id)
-                logger.info(
-                    "Batch %s: [%s/%s] doc_%s - needs conversion",
-                    batch_num,
-                    idx,
-                    len(batch_doc_ids),
-                    doc_id,
-                )
+                # Check if PDF exists for conversion
+                pdf_path = args.input_folder / f"doc_{doc_id}.pdf"
+                if pdf_path.exists():
+                    docs_needing_conversion.append(doc_id)
+                    logger.info(
+                        "Batch %s: [%s/%s] doc_%s - needs conversion",
+                        batch_num,
+                        idx,
+                        len(batch_doc_ids),
+                        doc_id,
+                    )
 
-        if docs_already_converted:
-            logger.info(
-                "Batch %s: Summary - %s/%s docs already have markdown (will skip conversion)",
-                batch_num,
-                len(docs_already_converted),
-                len(batch_doc_ids),
-            )
+        # Print comprehensive batch statistics
+        batch_range_size = args.max_doc_id - current_min_doc_id + 1
+        representation_type = "DOCLING_IMG" if args.run_all_images else "DOCLING"
+        logger.info("\n" + "=" * 80)
+        logger.info("Batch %s: DOCUMENT PROCESSING SUMMARY", batch_num)
+        logger.info("=" * 80)
+        logger.info("")
+        logger.info("Batch Range: doc_%s to doc_%s (%s potential documents)", current_min_doc_id, args.max_doc_id, batch_range_size)
+        logger.info("")
+        logger.info("Pipeline Stage Breakdown:")
+        logger.info("─" * 80)
+        logger.info("1. Fetched from kdocuments table in Supabase:           %s documents", fetch_stats.documents_considered)
+        logger.info("   ↓")
+        logger.info("2. Filtered out (already have %s in DB):      -%s documents", representation_type, fetch_stats.documents_skipped_existing)
+        logger.info("   ↓")
+        logger.info("3. Selected for processing:                             %s documents", fetch_stats.documents_selected)
+        logger.info("   ↓")
+        logger.info("4. PDF Download Results:")
+        logger.info("   • Downloaded successfully:                            %s documents", fetch_stats.documents_downloaded)
+        logger.info("   • Rejected (RAW file is not a valid PDF):            %s documents", fetch_stats.documents_rejected_not_pdf)
+        if fetch_stats.documents_failed > 0:
+            logger.info("   • Failed (other errors):                              %s documents", fetch_stats.documents_failed)
+            logger.info("     Errors:")
+            for error in fetch_stats.failed_errors[:10]:  # Show first 10 errors
+                logger.info("       - %s", error)
+            if len(fetch_stats.failed_errors) > 10:
+                logger.info("       ... and %s more", len(fetch_stats.failed_errors) - 10)
+        else:
+            logger.info("   • Failed (other errors):                              0 documents")
+        logger.info("   ↓")
+        logger.info("5. Local Markdown Check:")
+        logger.info("   • Already have markdown locally (skip conversion):    %s documents", len(docs_already_converted))
+        logger.info("   • Need markdown conversion:                           %s documents", len(docs_needing_conversion))
+        logger.info("   ↓")
+        logger.info("6. Documents proceeding to next phase:                   %s documents", len(docs_already_converted) + len(docs_needing_conversion))
+        logger.info("=" * 80)
+        logger.info("")
 
         # Only convert docs that need it
         output_stats = {"processed_files": 0, "uploaded_files": 0, "doc_ids_processed": []}
@@ -254,7 +287,7 @@ async def run_full(args: argparse.Namespace) -> None:
         # PHASE 2: Process images for this batch
         upload_summary = None
         if not args.skip_images and all_batch_docs:
-            logger.info("\n" + "=" * 80)
+            logger.info("\n\n\n" + "=" * 80)
             logger.info("Batch %s: PHASE 2 - IMAGE PROCESSING", batch_num)
             logger.info("=" * 80)
             logger.info("Batch %s: Processing images for %s documents (doc IDs: %s-%s)", batch_num, len(all_batch_docs), min(all_batch_docs), max(all_batch_docs))
@@ -284,7 +317,7 @@ async def run_full(args: argparse.Namespace) -> None:
             )
 
             # PHASE 3: Upload complete
-            logger.info("\n" + "=" * 80)
+            logger.info("\n\n\n" + "=" * 80)
             logger.info("Batch %s: PHASE 3 - UPLOAD COMPLETE", batch_num)
             logger.info("=" * 80)
             logger.info(
@@ -327,6 +360,12 @@ async def run_full(args: argparse.Namespace) -> None:
                 cleanup_count_batch["batch_files"],
                 cleanup_count_batch["description_files"],
             )
+        elif not all_batch_docs:
+            logger.info("\n\n\n" + "=" * 80)
+            logger.info("Batch %s: SKIPPING PHASE 2 & 3", batch_num)
+            logger.info("=" * 80)
+            logger.info("Batch %s: No documents to process - skipping image processing and upload", batch_num)
+            logger.info("Reason: All documents either failed PDF download or already have complete processing")
 
         # Clean up processed documents (PDFs, markdown, images) after image workflow completes
         if all_batch_docs:
@@ -382,7 +421,7 @@ async def run_full(args: argparse.Namespace) -> None:
             )
 
         # Batch complete summary
-        logger.info("\n" + "=" * 80)
+        logger.info("\n\n\n" + "=" * 80)
         logger.info("BATCH %s COMPLETE", batch_num)
         logger.info("=" * 80)
         logger.info("Documents processed: %s (converted: %s, already had markdown: %s)", len(all_batch_docs), len(processed_doc_ids), len(docs_already_converted))
@@ -635,7 +674,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
 
     while True:
         batch_num += 1
-        logger.info("\n" + "=" * 80)
+        logger.info("\n\n\n" + "=" * 80)
         logger.info("BATCH %s: Requesting up to %s documents (range: %s-%s)", batch_num, args.doc_batch_size, current_min_doc_id, args.max_doc_id)
         logger.info("=" * 80)
 
@@ -754,7 +793,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
         docs_already_integrated = []
         docs_to_process = []
 
-        logger.info("Batch %s: Checking processing status for %s documents", batch_num, len(final_docs))
+        logger.info("\n" + "Batch %s: Checking processing status for %s documents", batch_num, len(final_docs))
         for idx, doc_id in enumerate(final_docs, 1):
             enhanced_path = enhanced_dir / f"doc_{doc_id}.md"
             if enhanced_path.exists() and not force_reintegrate:
@@ -789,7 +828,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
         batch_total_images = 0
 
         if docs_to_process:
-            logger.info("Batch %s: Extracting images from %s documents", batch_num, len(docs_to_process))
+            logger.info("\n" + "Batch %s: Extracting images from %s documents", batch_num, len(docs_to_process))
             for idx, doc_id in enumerate(docs_to_process, 1):
                 pdf_path = pdf_map[doc_id]
                 base_doc_dir = images_base_dir / f"doc_{doc_id}"

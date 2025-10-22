@@ -697,8 +697,10 @@ class BatchDoclingConverter:
                     results.append((pdf_file, self._get_output_path(pdf_file), False, str(exc), 0, 0, 0.0))
                 finally:
                     completed += 1
+                    if completed > 1:  # Add newline before each doc (except first)
+                        self.logger.info("")
                     self.logger.info(
-                        "Conversion progress: %s/%s (%s)",
+                        "Markdown conversion: [%s/%s] %s",
                         completed,
                         total,
                         pdf_file.name,
@@ -732,8 +734,10 @@ class BatchDoclingConverter:
             pdf_path = Path(result[0]) if isinstance(result[0], str) else result[0]
             results.append((pdf_path, *result[1:]))
             completed += 1
+            if completed > 1:  # Add newline before each doc (except first)
+                self.logger.info("")
             self.logger.info(
-                "Conversion progress: %s/%s (%s)",
+                "Markdown conversion: [%s/%s] %s",
                 completed,
                 total,
                 pdf_file.name,
