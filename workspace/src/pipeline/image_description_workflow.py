@@ -349,7 +349,13 @@ class ImageDescriptionWorkflow:
         all_requests: List[Dict] = []
         for folder in sorted(valid_folders):
             doc_name = folder.name
-            image_files = sorted(folder.glob("*.png"))
+            # Search recursively to handle both old nested and new flat structure
+            # Old: doc_28137/28137/*.png, New: doc_28137/*.png
+            image_files = sorted(folder.glob("**/*.png"))
+            if not image_files:
+                logger.warning("No images found in %s (checked recursively)", doc_name)
+            else:
+                logger.debug("Found %s images in %s", len(image_files), doc_name)
             for idx, image_file in enumerate(image_files, start=1):
                 page_num, image_idx = _parse_image_filename(image_file.name, idx)
                 request = _create_batch_request(

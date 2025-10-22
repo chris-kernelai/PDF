@@ -133,14 +133,23 @@ def _process_single_pdf_worker(
 
             start_time = time.time()
             doc_id = Path(pdf_file_path).stem.replace("doc_", "")
-            images_dir = Path(images_output_dir) / f"doc_{doc_id}"
-            images_dir.mkdir(parents=True, exist_ok=True)
+            # Pass parent directory - Docling will create doc_{doc_id} subfolder automatically
+            # We want: images/doc_28137/*.png
+            # Docling creates: output_dir/{doc_id}/*.png where doc_id is the numeric part
+            # So we need to create images/doc_{doc_id} ourselves and pass that
+            images_base = Path(images_output_dir) / f"doc_{doc_id}"
+            images_base.mkdir(parents=True, exist_ok=True)
 
             pipeline = Pipeline(
                 steps=[
                     (
                         "extract_images",
-                        ImageExtractionConfig(output_dir=str(images_dir)),
+                        # Pass the doc folder directly so images go in doc_28137/*.png
+                        # not doc_28137/28137/*.png
+                        ImageExtractionConfig(
+                            output_dir=str(images_base),
+                            use_doc_id_subfolder=False,  # Try to prevent nested folder
+                        ),
                     )
                 ]
             )
