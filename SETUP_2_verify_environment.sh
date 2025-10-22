@@ -135,7 +135,51 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-# Check 6: GCP service account key
+# Check 6: AWS credentials test (boto3 sync)
+echo -n "Testing AWS access (boto3)... "
+AWS_TEST_OUTPUT=$(python3 -c "
+import boto3
+try:
+    client = boto3.client('sts', region_name='eu-west-2')
+    identity = client.get_caller_identity()
+    print(f\"✓ {identity['Arn'].split('/')[-1]}\")
+except Exception as e:
+    print(f'✗ {str(e)}')
+" 2>&1)
+if [[ "$AWS_TEST_OUTPUT" == ✓* ]]; then
+    echo -e "${GREEN}$AWS_TEST_OUTPUT${NC}"
+else
+    echo -e "${RED}$AWS_TEST_OUTPUT${NC}"
+    echo "  Check: IAM role attached OR AWS_PROFILE/AWS_ACCESS_KEY_ID set"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Check 7: AWS credentials test (aioboto3 async)
+echo -n "Testing AWS access (aioboto3)... "
+AIOBOTO3_TEST_OUTPUT=$(python3 -c "
+import aioboto3
+import asyncio
+
+async def test():
+    try:
+        session = aioboto3.Session(region_name='eu-west-2')
+        async with session.client('sts') as client:
+            identity = await client.get_caller_identity()
+            print(f\"✓ {identity['Arn'].split('/')[-1]}\")
+    except Exception as e:
+        print(f'✗ {str(e)}')
+
+asyncio.run(test())
+" 2>&1)
+if [[ "$AIOBOTO3_TEST_OUTPUT" == ✓* ]]; then
+    echo -e "${GREEN}$AIOBOTO3_TEST_OUTPUT${NC}"
+else
+    echo -e "${RED}$AIOBOTO3_TEST_OUTPUT${NC}"
+    echo "  aioboto3 cannot access AWS credentials (this will break images-only pipeline)"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Check 8: GCP service account key
 echo -n "Checking GCP authentication... "
 if [ -f "gcp-service-account-key.json" ]; then
     echo -e "${GREEN}✓${NC}"
@@ -147,7 +191,7 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-# Check 7: Config file
+# Check 9: Config file
 echo -n "Checking config.yaml... "
 if [ -f "workspace/configs/config.yaml" ]; then
     echo -e "${GREEN}✓${NC}"
@@ -155,7 +199,7 @@ else
     echo -e "${YELLOW}⚠ workspace/configs/config.yaml not found${NC}"
 fi
 
-# Check 8: Pipeline scripts
+# Check 10: Pipeline scripts
 echo -n "Checking pipeline scripts... "
 REQUIRED_SCRIPTS="run_pipeline.py run_pipeline.sh run_pipeline_md_only.sh run_pipeline_images_only.sh"
 MISSING_SCRIPTS=""
