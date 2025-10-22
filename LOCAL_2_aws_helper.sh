@@ -18,7 +18,8 @@
 #   ./LOCAL_2_aws_helper.sh clean [instance]           # Remove processed files
 #
 # Available instances:
-#   PDF (default): 3.101.112.7 - GPU (Tesla T4) - US West
+#   PDF (default): 204.236.163.8 - GPU (Tesla T4) - US West
+#   PDF-2:         54.215.92.93 - GPU (Tesla T4) - US West
 #   PDF-London:    35.178.204.146 - GPU (Tesla T4) - London
 #
 ################################################################################
@@ -43,6 +44,7 @@ Commands:
 
 Instances:
   PDF (default)
+  PDF-2
   PDF-London
   or provide a raw IP address
 EOF
@@ -65,6 +67,13 @@ get_instance_config() {
             INSTANCE_REGION="eu-west-2"
             PEM_KEY="workspace/configs/keys/PDF-London.pem"
             INSTANCE_TYPE="GPU (Tesla T4 London)"
+            ;;
+        PDF-2)
+            INSTANCE_IP="54.215.92.93"
+            INSTANCE_ID="i-04ee570e5bfab51d9"
+            INSTANCE_REGION="us-west-1"
+            PEM_KEY="workspace/configs/keys/PDF.pem"
+            INSTANCE_TYPE="GPU (Tesla T4)"
             ;;
         *)
             return 1
@@ -564,16 +573,21 @@ ENDSSH
         echo "  clean [instance]           Remove all processed files on instance"
         echo ""
         echo "Available Instances:"
-        echo "  PDF (default):  3.101.112.7  - GPU (Tesla T4) - US West"
+        echo "  PDF (default):  204.236.163.8  - GPU (Tesla T4) - US West"
+        echo "  PDF-2:          54.215.92.93   - GPU (Tesla T4) - US West"
         echo "  PDF-London:     35.178.204.146 - GPU (Tesla T4) - London"
         echo ""
         echo "Examples:"
         echo "  $0 setup                   # Setup PDF instance (default)"
+        echo "  $0 setup PDF-2             # Setup PDF-2 instance"
         echo "  $0 setup PDF-London        # Setup PDF-London instance"
         echo "  $0 connect                 # Connect to PDF instance"
+        echo "  $0 connect PDF-2           # Connect to PDF-2 instance"
         echo "  $0 connect PDF-London      # Connect to PDF-London instance"
+        echo "  $0 sync-code PDF-2         # Sync code to PDF-2 instance"
         echo "  $0 sync-code PDF-London    # Sync code to PDF-London instance"
         echo "  $0 run                     # Run on PDF instance"
+        echo "  $0 run PDF-2               # Run on PDF-2 instance"
         echo "  $0 run PDF-London          # Run on PDF-London instance"
         exit 1
         ;;

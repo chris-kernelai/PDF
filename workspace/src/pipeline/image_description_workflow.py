@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -444,7 +445,7 @@ class ImageDescriptionWorkflow:
         jobs: List[UploadJob] = []
         tracking_file = prep_result.batches_dir / "batch_jobs_tracking.json"
 
-        for batch_file in batch_files:
+        for idx, batch_file in enumerate(batch_files, start=1):
             job_time = datetime.now().isoformat()
             blob_path = f"{self.gcs_input_prefix}/{batch_file.name}"
             blob = bucket.blob(blob_path)
@@ -468,7 +469,13 @@ class ImageDescriptionWorkflow:
                     timestamp=job_time,
                 )
             )
-            logger.info("Created batch job %s", job.name)
+            logger.info("Created batch job %s (%d/%d)", job.name, idx, len(batch_files))
+
+            # Rate limiting: wait 1 second between job submissions to avoid quota limits
+            # (Google Vertex AI has a 60 jobs/minute limit per region)
+            if idx < len(batch_files):
+                logger.debug("Waiting 1 second before next batch submission to avoid rate limits")
+                time.sleep(1)
 
         tracking_payload = {
             "session_id": prep_result.session_id,
