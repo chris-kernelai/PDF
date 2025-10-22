@@ -618,6 +618,7 @@ async def run_images_only(args: argparse.Namespace) -> None:
     overall_processed_docs = 0
     base_session_id = args.session_id or uuid4().hex[:8]
     batch_num = 0
+    current_min_doc_id = args.min_doc_id
 
     workflow = ImageDescriptionWorkflow(
         images_dir=images_base_dir,
@@ -635,13 +636,13 @@ async def run_images_only(args: argparse.Namespace) -> None:
     while True:
         batch_num += 1
         logger.info("\n" + "=" * 80)
-        logger.info("BATCH %s: Fetching next %s documents", batch_num, args.doc_batch_size)
+        logger.info("BATCH %s: Requesting up to %s documents (range: %s-%s)", batch_num, args.doc_batch_size, current_min_doc_id, args.max_doc_id)
         logger.info("=" * 80)
 
         fetcher = DocumentFetcher(
             config_path=args.config,
             limit=args.doc_batch_size,  # Fetch batch_size docs at a time
-            min_doc_id=args.min_doc_id,
+            min_doc_id=current_min_doc_id,
             max_doc_id=args.max_doc_id,
             run_all_images=True,
             download_pdfs=not args.skip_pdf_download,
@@ -663,6 +664,13 @@ async def run_images_only(args: argparse.Namespace) -> None:
         if hasattr(fetcher, "last_selected_docs"):
             last_docs = getattr(fetcher, "last_selected_docs", [])
             doc_ids = sorted({doc["id"] for doc in last_docs})
+            logger.info(
+                "Batch %s: Document IDs to process: %s-%s (%s docs)",
+                batch_num,
+                min(doc_ids) if doc_ids else "N/A",
+                max(doc_ids) if doc_ids else "N/A",
+                len(doc_ids),
+            )
         else:
             logger.warning(
                 "DocumentFetcher missing last_selected_docs; inferring doc IDs from %s",
@@ -786,15 +794,28 @@ async def run_images_only(args: argparse.Namespace) -> None:
                 pdf_path = pdf_map[doc_id]
                 base_doc_dir = images_base_dir / f"doc_{doc_id}"
 
-                if _directory_has_images(base_doc_dir) and not args.force_reextract:
-                    logger.info(
-                        "Batch %s: [%s/%s] doc_%s - reusing cached images",
-                        batch_num,
-                        idx,
-                        len(docs_to_process),
-                        doc_id,
-                    )
+                # Check if we already processed this document (directory exists = processed)
+                if base_doc_dir.exists() and not args.force_reextract:
+                    has_images = _directory_has_images(base_doc_dir)
+                    if has_images:
+                        logger.info(
+                            "Batch %s: [%s/%s] doc_%s - reusing cached images (%s files)",
+                            batch_num,
+                            idx,
+                            len(docs_to_process),
+                            doc_id,
+                            len(list(base_doc_dir.glob("*.png"))) + len(list(base_doc_dir.glob("*.jpg"))),
+                        )
+                    else:
+                        logger.info(
+                            "Batch %s: [%s/%s] doc_%s - already processed (0 images found previously)",
+                            batch_num,
+                            idx,
+                            len(docs_to_process),
+                            doc_id,
+                        )
                 else:
+                    # Extract images - either directory doesn't exist or force_reextract is True
                     if base_doc_dir.exists():
                         shutil.rmtree(base_doc_dir, ignore_errors=True)
                     base_doc_dir.mkdir(parents=True, exist_ok=True)
@@ -1036,6 +1057,16 @@ async def run_images_only(args: argparse.Namespace) -> None:
                 cleanup_count_batch["batch_files"],
                 cleanup_count_batch["description_files"],
             )
+
+        # Update current_min_doc_id for next batch to avoid infinite loops
+        if doc_ids:
+            current_min_doc_id = max(doc_ids) + 1
+            logger.info("Batch %s: Next batch will start from doc_id %s", batch_num, current_min_doc_id)
+
+            # Check if we've exceeded the max range
+            if current_min_doc_id > args.max_doc_id:
+                logger.info("Batch %s: Reached end of document range (max: %s)", batch_num, args.max_doc_id)
+                break
 
     logger.info("\n" + "=" * 80)
     logger.info("IMAGES-ONLY PIPELINE COMPLETE")
