@@ -114,7 +114,8 @@ class DoclingMarkdownDownloader:
 
         pool = await asyncpg.create_pool(**self.supabase_config.to_dict())
         session_kwargs: Dict[str, str] = {"region_name": self.aws_region}
-        if not os.getenv("AWS_ACCESS_KEY_ID") and self.aws_profile:
+        # Only use profile if explicitly set; otherwise let boto3 use default credential chain (IAM role, etc.)
+        if self.aws_profile:
             session_kwargs["profile_name"] = self.aws_profile
 
         session = aioboto3.Session(**session_kwargs)
