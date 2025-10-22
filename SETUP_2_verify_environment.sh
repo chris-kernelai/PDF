@@ -115,9 +115,14 @@ if [ -f ".env" ]; then
         fi
     done
 
-    # Also accept AWS_PROFILE or AWS_ACCESS_KEY_ID
+    # Check AWS credentials: either environment vars OR IAM role
     if [ -z "$AWS_PROFILE" ] && [ -z "$AWS_ACCESS_KEY_ID" ]; then
-        MISSING_VARS="$MISSING_VARS AWS_PROFILE/AWS_ACCESS_KEY_ID"
+        # Check if instance has IAM role (EC2 metadata service)
+        if curl -s --connect-timeout 1 http://169.254.169.254/latest/meta-data/iam/security-credentials/ &> /dev/null; then
+            echo -e "${GREEN}  ✓ Using IAM role for AWS authentication${NC}"
+        else
+            MISSING_VARS="$MISSING_VARS AWS_PROFILE/AWS_ACCESS_KEY_ID"
+        fi
     fi
 
     if [ -n "$MISSING_VARS" ]; then

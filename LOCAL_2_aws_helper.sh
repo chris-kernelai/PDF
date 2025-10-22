@@ -323,6 +323,16 @@ if [ -f ".env" ] && [ -f "gcp-service-account-key.json" ]; then
     # Authenticate gcloud with the service account
     gcloud auth activate-service-account --key-file=/home/ubuntu/pdf_pipeline/gcp-service-account-key.json 2>/dev/null && echo "✓ Authenticated gcloud with service account" || echo "⚠️  gcloud authentication skipped (gcloud may not be installed)"
 fi
+
+# Remove or comment out AWS credentials (instance uses IAM role instead)
+if [ -f ".env" ]; then
+    echo "Removing AWS credentials from .env (instance uses IAM role)..."
+    sed -i '/^AWS_PROFILE=/d' .env
+    sed -i '/^AWS_ACCESS_KEY_ID=/d' .env
+    sed -i '/^AWS_SECRET_ACCESS_KEY=/d' .env
+    echo "✓ Removed AWS_PROFILE, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from .env"
+    echo "✓ Instance will use IAM role for AWS authentication"
+fi
 ENDSSH
 
         # Set proper permissions on remote
