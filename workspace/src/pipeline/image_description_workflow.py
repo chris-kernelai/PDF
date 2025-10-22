@@ -241,39 +241,48 @@ class ImageDescriptionWorkflow:
             allowed_doc_names,
         )
 
+        # If no batches prepared (no images), still create enhanced markdown and upload
+        # Enhanced markdown will be same as original with note about 0 images
         if not prep_result.batch_files:
-            logger.warning("No batches prepared; skipping image workflow")
-            return UploadSummary(skipped=len(prep_result.doc_ids))
+            logger.info("No images found for any documents - will create enhanced markdown with 0 images note")
+            # Create enhanced markdown for all docs even with 0 images
+            integration_result = await asyncio.to_thread(
+                self._integrate_descriptions,
+                None,  # No descriptions directory since no Gemini processing
+                prep_result.doc_ids,
+                force_reintegrate,
+                session_id,
+            )
+        else:
+            # Process images through Gemini
+            client = init_client()
+            upload_result = await asyncio.to_thread(
+                self._upload_batches,
+                client,
+                prep_result,
+            )
 
-        client = init_client()
-        upload_result = await asyncio.to_thread(
-            self._upload_batches,
-            client,
-            prep_result,
-        )
+            await self._monitor_batches(client, upload_result.jobs, wait_seconds, max_retries)
 
-        await self._monitor_batches(client, upload_result.jobs, wait_seconds, max_retries)
+            gcs_client = storage.Client()
+            download_result = await asyncio.to_thread(
+                self._download_results,
+                client,
+                gcs_client,
+                prep_result.session_id,
+                upload_result.jobs,
+            )
 
-        gcs_client = storage.Client()
-        download_result = await asyncio.to_thread(
-            self._download_results,
-            client,
-            gcs_client,
-            prep_result.session_id,
-            upload_result.jobs,
-        )
+            if download_result.total_descriptions == 0:
+                logger.warning("No descriptions downloaded from Gemini - creating enhanced markdown with 0 descriptions")
 
-        if download_result.total_descriptions == 0:
-            logger.warning("No descriptions downloaded from Gemini; skipping integration and upload")
-            return UploadSummary(skipped=len(prep_result.doc_ids))
-
-        integration_result = await asyncio.to_thread(
-            self._integrate_descriptions,
-            download_result.descriptions_dir,
-            prep_result.doc_ids,
-            force_reintegrate,
-            session_id,
-        )
+            integration_result = await asyncio.to_thread(
+                self._integrate_descriptions,
+                download_result.descriptions_dir if download_result.total_descriptions > 0 else None,
+                prep_result.doc_ids,
+                force_reintegrate,
+                session_id,
+            )
 
         summary = UploadSummary()
 
@@ -627,11 +636,50 @@ class ImageDescriptionWorkflow:
 
     def _integrate_descriptions(
         self,
-        descriptions_dir: Path,
+        descriptions_dir: Optional[Path],
         target_doc_ids: Optional[Iterable[int]] = None,
         force_overwrite: bool = False,
         current_session_id: Optional[str] = None,
     ) -> IntegrationResult:
+        # Handle case where no images were found - still create enhanced markdown
+        if descriptions_dir is None:
+            logger.info("No images found - creating enhanced markdown with 0 images for %s documents", len(list(target_doc_ids)) if target_doc_ids else 0)
+            _ensure_dir(self.enhanced_markdown_dir)
+            processed = 0
+            for doc_id in (target_doc_ids or []):
+                markdown_path = self.processed_markdown_dir / f"doc_{doc_id}.md"
+                if not markdown_path.exists():
+                    markdown_path = self.processed_markdown_dir / f"{doc_id}.md"
+                if not markdown_path.exists():
+                    logger.warning("Markdown missing for doc_%s; skipping", doc_id)
+                    continue
+
+                # Copy markdown to enhanced dir with metadata header
+                enhanced_path = self.enhanced_markdown_dir / f"doc_{doc_id}.md"
+                content = markdown_path.read_text(encoding="utf-8")
+
+                # Add metadata header matching ImageDescriptionIntegrator format
+                metadata_header = f"""---
+**Enhanced with Image Descriptions**
+**Original File:** {markdown_path.name}
+**Descriptions Added:** 0
+**Enhanced Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+---
+
+"""
+                enhanced_content = metadata_header + content
+                enhanced_path.write_text(enhanced_content, encoding="utf-8")
+                processed += 1
+                logger.debug("Created enhanced markdown for doc_%s (0 images)", doc_id)
+
+            return IntegrationResult(
+                processed_files=processed,
+                skipped_files=0,
+                failed_files=0,
+                descriptions_added=0
+            )
+
+        # Normal case: process with image descriptions
         integrator = ImageDescriptionIntegrator(
             markdown_dir=self.processed_markdown_dir,
             output_dir=self.enhanced_markdown_dir,
@@ -651,13 +699,9 @@ class ImageDescriptionWorkflow:
             }
 
         if not descriptions:
-            logger.warning("No descriptions available for integration; skipping")
-            return IntegrationResult(
-                processed_files=0,
-                skipped_files=0,
-                failed_files=0,
-                descriptions_added=0
-            )
+            logger.warning("No descriptions available for integration; creating enhanced markdown with 0 images")
+            # Recursively call with None to handle as zero-image case
+            return self._integrate_descriptions(None, target_doc_ids, force_overwrite, current_session_id)
 
         integrator.stats["total_files"] = len(descriptions)
 
