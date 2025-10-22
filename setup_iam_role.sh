@@ -13,6 +13,8 @@
 
 set -euo pipefail
 
+export AWS_PROFILE="production"
+
 ROLE_NAME="PDF-Pipeline-EC2-Role"
 INSTANCE_PROFILE_NAME="PDF-Pipeline-EC2-Profile"
 POLICY_NAME="PDF-Pipeline-S3-Access"
