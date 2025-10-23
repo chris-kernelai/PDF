@@ -29,10 +29,12 @@ NC='\033[0m'
 # Instance IDs
 INSTANCE_PDF="i-09f9f69a561efe64c"
 INSTANCE_PDF2="i-04ee570e5bfab51d9"
+INSTANCE_PDF3="i-0072a25219e846862"
 INSTANCE_LONDON="i-0131ec0698e8c7bbf"
 
 REGION_PDF="us-west-1"
 REGION_PDF2="us-west-1"
+REGION_PDF3="us-west-1"
 REGION_LONDON="eu-west-2"
 
 usage() {
@@ -219,6 +221,10 @@ attach_all() {
     attach_role "$INSTANCE_PDF2" "$REGION_PDF2"
     echo ""
     
+    echo "PDF-3 instance (us-west-1):"
+    attach_role "$INSTANCE_PDF3" "$REGION_PDF3"
+    echo ""
+    
     echo "PDF-London instance (eu-west-2):"
     attach_role "$INSTANCE_LONDON" "$REGION_LONDON"
     echo ""
@@ -254,6 +260,9 @@ case "$COMMAND" in
             "$INSTANCE_PDF2")
                 REGION="$REGION_PDF2"
                 ;;
+            "$INSTANCE_PDF3")
+                REGION="$REGION_PDF3"
+                ;;
             "$INSTANCE_LONDON")
                 REGION="$REGION_LONDON"
                 ;;
@@ -281,6 +290,9 @@ case "$COMMAND" in
                 ;;
             "$INSTANCE_PDF2")
                 REGION="$REGION_PDF2"
+                ;;
+            "$INSTANCE_PDF3")
+                REGION="$REGION_PDF3"
                 ;;
             "$INSTANCE_LONDON")
                 REGION="$REGION_LONDON"

@@ -20,6 +20,7 @@
 # Available instances:
 #   PDF (default): 204.236.163.8 - GPU (Tesla T4) - US West
 #   PDF-2:         13.57.201.212 - GPU (Tesla T4) - US West
+#   PDF-3:         13.52.177.251 - GPU (Tesla T4) - US West
 #   PDF-London:    35.178.204.146 - GPU (Tesla T4) - London
 #
 ################################################################################
@@ -45,6 +46,7 @@ Commands:
 Instances:
   PDF (default)
   PDF-2
+  PDF-3
   PDF-London
   or provide a raw IP address
 EOF
@@ -73,6 +75,13 @@ get_instance_config() {
             INSTANCE_ID="i-04ee570e5bfab51d9"
             INSTANCE_REGION="us-west-1"
             PEM_KEY="workspace/configs/keys/PDF.pem"
+            INSTANCE_TYPE="GPU (Tesla T4)"
+            ;;
+        PDF-3)
+            INSTANCE_IP="13.52.177.251"
+            INSTANCE_ID="i-0072a25219e846862"
+            INSTANCE_REGION="us-west-1"
+            PEM_KEY="workspace/configs/keys/PDF_key.pem"
             INSTANCE_TYPE="GPU (Tesla T4)"
             ;;
         *)
@@ -585,6 +594,7 @@ ENDSSH
         echo "Available Instances:"
         echo "  PDF (default):  204.236.163.8  - GPU (Tesla T4) - US West"
         echo "  PDF-2:          13.57.201.212   - GPU (Tesla T4) - US West"
+        echo "  PDF-3:          13.52.177.251   - GPU (Tesla T4) - US West"
         echo "  PDF-London:     35.178.204.146 - GPU (Tesla T4) - London"
         echo ""
         echo "Examples:"
