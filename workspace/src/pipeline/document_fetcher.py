@@ -257,9 +257,9 @@ class DocumentFetcher:
             random.seed(self.random_seed)
             random.shuffle(docs)
 
-        if self.limit is not None:
-            docs = docs[: self.limit]
-
+        # Don't limit before filtering - we need to check all candidates
+        # The limit will be applied after filtering to ensure we get enough documents
+        
         selected: List[Dict] = []
 
         for doc in docs:
@@ -285,6 +285,10 @@ class DocumentFetcher:
                 continue
 
             selected.append(doc)
+            
+            # Apply limit AFTER filtering - stop once we have enough valid documents
+            if self.limit is not None and len(selected) >= self.limit:
+                break
 
         self.stats.documents_selected = len(selected)
         logger.info("Selected %s documents after filtering", len(selected))
