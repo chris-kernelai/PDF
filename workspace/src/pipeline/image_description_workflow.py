@@ -21,6 +21,7 @@ from google.genai.types import CreateBatchJobConfig
 
 from src.pipeline.gemini import init_client, validate_environment
 from src.pipeline.paths import DATA_DIR, WORKSPACE_ROOT
+from src.pipeline.supabase import SupabaseConfig, fetch_existing_representations
 from src.standalone_upload_representations import DocumentRepresentationUploader
 
 _INTEGRATOR_SPEC = importlib.util.spec_from_file_location(
@@ -234,8 +235,7 @@ class ImageDescriptionWorkflow:
             else None
         )
 
-        prep_result = await asyncio.to_thread(
-            self._prepare_batches,
+        prep_result = await self._prepare_batches(
             session_id,
             batch_size,
             system_instruction,
@@ -297,7 +297,7 @@ class ImageDescriptionWorkflow:
         )
         return summary
 
-    def _prepare_batches(
+    async def _prepare_batches(
         self,
         session_id: str,
         batch_size: int,
@@ -330,22 +330,61 @@ class ImageDescriptionWorkflow:
                 0,
             )
 
-        valid_folders: List[Path] = []
-        doc_ids: Set[int] = set()
+        # First pass: collect folders with matching markdown
+        candidate_folders: List[Path] = []
+        candidate_doc_ids: List[int] = []
         for folder in doc_folders:
             doc_name = folder.name
             md_candidates = [processed_dir / f"{doc_name}.md", processed_dir / f"doc_{doc_name}.md"]
             if any(candidate.exists() for candidate in md_candidates):
-                valid_folders.append(folder)
+                candidate_folders.append(folder)
                 try:
-                    doc_ids.add(int(doc_name.replace("doc_", "")))
+                    doc_id = int(doc_name.replace("doc_", ""))
+                    candidate_doc_ids.append(doc_id)
                 except ValueError:
                     pass
             else:
                 logger.debug("Skipping %s (no markdown found)", doc_name)
 
-        if not valid_folders:
+        if not candidate_folders:
             logger.warning("No image folders have matching markdown files")
+            return BatchPreparationResult(
+                session_id,
+                [],
+                batches_dir,
+                batches_dir / "batch_metadata.json",
+                set(),
+                0,
+                0,
+            )
+
+        # Second pass: check database for existing DOCLING_IMG representations
+        existing_reps = {}
+        if candidate_doc_ids:
+            logger.info("Checking database for existing DOCLING_IMG representations...")
+            supabase_config = SupabaseConfig.from_env()
+            existing_reps = await fetch_existing_representations(supabase_config, candidate_doc_ids)
+            logger.info("Found %s documents with existing representations", len(existing_reps))
+
+        # Third pass: filter out documents that already have DOCLING_IMG
+        valid_folders: List[Path] = []
+        doc_ids: Set[int] = set()
+        for folder in candidate_folders:
+            doc_name = folder.name
+            try:
+                doc_id = int(doc_name.replace("doc_", ""))
+                reps = existing_reps.get(doc_id, set())
+                if "DOCLING_IMG" in reps:
+                    logger.debug("Skipping %s (already has DOCLING_IMG)", doc_name)
+                    continue
+                valid_folders.append(folder)
+                doc_ids.add(doc_id)
+            except ValueError:
+                # If we can't parse doc_id, include it anyway
+                valid_folders.append(folder)
+
+        if not valid_folders:
+            logger.warning("All image folders already have DOCLING_IMG representations")
             return BatchPreparationResult(
                 session_id,
                 [],
