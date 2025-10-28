@@ -77,9 +77,24 @@ class DocumentRepresentationUploader:
         self.session = aioboto3.Session(**session_args)
         self.s3_client = await self.session.client("s3").__aenter__()
 
-        # Initialize database connection pool
-        self.db_pool = await asyncpg.create_pool(**self.db_config)
-        print("✅ Initialized S3 and database connections")
+        # Initialize database connection pool with retry logic
+        max_retries = 5
+        retry_delay = 30  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 Attempting database connection (attempt {attempt + 1}/{max_retries})...")
+                self.db_pool = await asyncpg.create_pool(**self.db_config)
+                print("✅ Initialized S3 and database connections")
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️  Database connection failed: {type(e).__name__}: {e}")
+                    print(f"⏳ Waiting {retry_delay} seconds before retry...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    print(f"❌ Database connection failed after {max_retries} attempts")
+                    raise
 
     async def close(self):
         """Close all connections."""

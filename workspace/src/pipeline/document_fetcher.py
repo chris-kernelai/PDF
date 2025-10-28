@@ -189,7 +189,7 @@ class DocumentFetcher:
                             c.ticker,
                             c.name AS company_name
                         FROM librarian.kdocuments d
-                        JOIN librarian.company c ON d.company_id = c.id
+                        JOIN public.company c ON d.isin = c.isin
                         WHERE {' AND '.join(where_clauses)}
                         ORDER BY d.id
                     """
@@ -234,7 +234,7 @@ class DocumentFetcher:
                         c.ticker,
                         c.name AS company_name
                     FROM librarian.kdocuments d
-                    JOIN librarian.company c ON d.company_id = c.id
+                    JOIN public.company c ON d.isin = c.isin
                     WHERE d.id = ANY(%s)
                     ORDER BY d.id
                 """
