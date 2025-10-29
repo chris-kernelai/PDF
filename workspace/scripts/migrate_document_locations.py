@@ -110,7 +110,8 @@ class DocumentLocationMigrator:
         # Statistics
         self.stats = {
             "total_doc_ids": 0,
-            "filtered_complete": 0,
+            "filtered_tags_extracted": 0,  # Docs skipped because tags already in v2
+            "filtered_complete": 0,  # Docs skipped because already in document_locations
             "total_rows": 0,
             "migrated": 0,
             "skipped": 0,
@@ -698,6 +699,40 @@ class DocumentLocationMigrator:
 
         return batch_stats
 
+    async def filter_docs_with_tags_in_v2(self, doc_ids: List[int]) -> List[int]:
+        """
+        Filter out doc_ids that already have tags extracted in document_locations_v2.
+        Only filters if --force is not enabled.
+        
+        Returns:
+            List of doc_ids that need tag extraction
+        """
+        if self.force:
+            return doc_ids
+        
+        async with self.db_pool.acquire() as conn:
+            # Find doc_ids where BOTH DOCLING and DOCLING_IMG have non-null tags in v2
+            query = """
+                SELECT kdocument_id
+                FROM librarian.document_locations_v2
+                WHERE kdocument_id = ANY($1)
+                  AND representation_type::text IN ('DOCLING', 'DOCLING_IMG')
+                  AND representation_tags IS NOT NULL
+                  AND representation_tags != ''
+                GROUP BY kdocument_id
+                HAVING COUNT(DISTINCT representation_type::text) = 2
+            """
+            completed_rows = await conn.fetch(query, doc_ids)
+            completed_doc_ids = {row['kdocument_id'] for row in completed_rows}
+            
+            if completed_doc_ids:
+                remaining = [doc_id for doc_id in doc_ids if doc_id not in completed_doc_ids]
+                print(f"✅ {len(completed_doc_ids)} documents already have DOCLING and DOCLING_IMG tags extracted in v2")
+                print(f"📋 {len(remaining)} documents need tag extraction")
+                return remaining
+            else:
+                return doc_ids
+
     async def filter_completed_docs(self, doc_ids: List[int]) -> List[int]:
         """
         Filter out doc_ids that already have both DOCLING and DOCLING_IMG in document_locations.
@@ -711,21 +746,22 @@ class DocumentLocationMigrator:
             return doc_ids
         
         async with self.db_pool.acquire() as conn:
-            # Find doc_ids that have BOTH representations in document_locations
+            # Find doc_ids that have BOTH DOCLING and DOCLING_IMG representations in document_locations
             query = """
                 SELECT kdocument_id
                 FROM librarian.document_locations
                 WHERE kdocument_id = ANY($1)
+                  AND representation_type::text IN ('DOCLING', 'DOCLING_IMG')
                 GROUP BY kdocument_id
-                HAVING COUNT(DISTINCT representation_type) = 2
+                HAVING COUNT(DISTINCT representation_type::text) = 2
             """
             completed_rows = await conn.fetch(query, doc_ids)
             completed_doc_ids = {row['kdocument_id'] for row in completed_rows}
             
             if completed_doc_ids:
                 remaining = [doc_id for doc_id in doc_ids if doc_id not in completed_doc_ids]
-                print(f"✅ {len(completed_doc_ids)} documents already complete in document_locations (both reps exist)")
-                print(f"📋 {len(remaining)} documents need processing")
+                print(f"✅ {len(completed_doc_ids)} documents already have DOCLING and DOCLING_IMG in document_locations")
+                print(f"📋 {len(remaining)} documents need copying to document_locations")
                 return remaining
             else:
                 return doc_ids
@@ -739,18 +775,28 @@ class DocumentLocationMigrator:
 
         # Track original count
         self.stats['total_doc_ids'] = len(doc_ids)
+        original_count = len(doc_ids)
 
-        # Filter out completed documents (unless --force)
+        # FIRST: Filter out documents that are already in document_locations (unless --force)
+        # This is the main check - if they're already in document_locations, we're done!
         print(f"\n🔍 Checking document_locations for already-complete documents...")
-        filtered_doc_ids = await self.filter_completed_docs(doc_ids)
+        doc_ids = await self.filter_completed_docs(doc_ids)
+        self.stats['filtered_complete'] = original_count - len(doc_ids)
         
-        self.stats['filtered_complete'] = len(doc_ids) - len(filtered_doc_ids)
-        
-        if not filtered_doc_ids:
-            print("\n✅ All documents already complete! Nothing to process.")
+        if not doc_ids:
+            print("\n✅ All documents already complete in document_locations! Nothing to process.")
             return
+
+        # SECOND: Filter out documents that already have tags extracted in v2 (unless --force)
+        # This catches cases where Phase 1 is done but Phase 2 isn't
+        print(f"\n🔍 Checking document_locations_v2 for already-extracted tags...")
+        after_locations_filter = len(doc_ids)
+        doc_ids = await self.filter_docs_with_tags_in_v2(doc_ids)
+        self.stats['filtered_tags_extracted'] = after_locations_filter - len(doc_ids)
         
-        doc_ids = filtered_doc_ids
+        if not doc_ids:
+            print("\n✅ Remaining documents already have tags extracted! Nothing to process.")
+            return
 
         # Fetch all rows from v2
         print(f"\n📊 Fetching rows from document_locations_v2...")
@@ -825,9 +871,13 @@ class DocumentLocationMigrator:
         print(f"{'='*60}")
         print(f"\n📋 Input")
         print(f"   Total document IDs requested:   {self.stats['total_doc_ids']}")
-        if self.stats['filtered_complete'] > 0:
-            print(f"   ⏭️  Skipped (already complete):  {self.stats['filtered_complete']}")
-            print(f"   📋 Processed:                   {self.stats['total_doc_ids'] - self.stats['filtered_complete']}")
+        total_filtered = self.stats['filtered_tags_extracted'] + self.stats['filtered_complete']
+        if total_filtered > 0:
+            if self.stats['filtered_tags_extracted'] > 0:
+                print(f"   ⏭️  Skipped (tags extracted):    {self.stats['filtered_tags_extracted']}")
+            if self.stats['filtered_complete'] > 0:
+                print(f"   ⏭️  Skipped (already complete):  {self.stats['filtered_complete']}")
+            print(f"   📋 Processed:                   {self.stats['total_doc_ids'] - total_filtered}")
         
         print(f"\n📋 Phase 1: Tag Extraction (document_locations_v2)")
         print(f"   Total rows:                     {self.stats['total_rows']}")
