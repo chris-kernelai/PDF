@@ -109,6 +109,8 @@ class DocumentLocationMigrator:
 
         # Statistics
         self.stats = {
+            "total_doc_ids": 0,
+            "filtered_complete": 0,
             "total_rows": 0,
             "migrated": 0,
             "skipped": 0,
@@ -696,12 +698,59 @@ class DocumentLocationMigrator:
 
         return batch_stats
 
+    async def filter_completed_docs(self, doc_ids: List[int]) -> List[int]:
+        """
+        Filter out doc_ids that already have both DOCLING and DOCLING_IMG in document_locations.
+        Only filters if --force is not enabled.
+        
+        Returns:
+            List of doc_ids that need processing
+        """
+        if self.force:
+            print("⚠️  Force mode: will process all documents even if complete")
+            return doc_ids
+        
+        async with self.db_pool.acquire() as conn:
+            # Find doc_ids that have BOTH representations in document_locations
+            query = """
+                SELECT kdocument_id
+                FROM librarian.document_locations
+                WHERE kdocument_id = ANY($1)
+                GROUP BY kdocument_id
+                HAVING COUNT(DISTINCT representation_type) = 2
+            """
+            completed_rows = await conn.fetch(query, doc_ids)
+            completed_doc_ids = {row['kdocument_id'] for row in completed_rows}
+            
+            if completed_doc_ids:
+                remaining = [doc_id for doc_id in doc_ids if doc_id not in completed_doc_ids]
+                print(f"✅ {len(completed_doc_ids)} documents already complete in document_locations (both reps exist)")
+                print(f"📋 {len(remaining)} documents need processing")
+                return remaining
+            else:
+                return doc_ids
+
     async def migrate(self, doc_ids: List[int], batch_size: int = 100):
         """Migrate documents in batches."""
         print(f"\n🚀 Starting migration for {len(doc_ids)} document IDs")
         print(f"📦 Batch size: {batch_size}")
         print(f"🪣 S3 Bucket: {self.s3_bucket}")
         print(f"🗄️  Database: {self.db_config['database']}")
+
+        # Track original count
+        self.stats['total_doc_ids'] = len(doc_ids)
+
+        # Filter out completed documents (unless --force)
+        print(f"\n🔍 Checking document_locations for already-complete documents...")
+        filtered_doc_ids = await self.filter_completed_docs(doc_ids)
+        
+        self.stats['filtered_complete'] = len(doc_ids) - len(filtered_doc_ids)
+        
+        if not filtered_doc_ids:
+            print("\n✅ All documents already complete! Nothing to process.")
+            return
+        
+        doc_ids = filtered_doc_ids
 
         # Fetch all rows from v2
         print(f"\n📊 Fetching rows from document_locations_v2...")
@@ -774,6 +823,12 @@ class DocumentLocationMigrator:
         print(f"\n{'='*60}")
         print(f"📊 MIGRATION SUMMARY")
         print(f"{'='*60}")
+        print(f"\n📋 Input")
+        print(f"   Total document IDs requested:   {self.stats['total_doc_ids']}")
+        if self.stats['filtered_complete'] > 0:
+            print(f"   ⏭️  Skipped (already complete):  {self.stats['filtered_complete']}")
+            print(f"   📋 Processed:                   {self.stats['total_doc_ids'] - self.stats['filtered_complete']}")
+        
         print(f"\n📋 Phase 1: Tag Extraction (document_locations_v2)")
         print(f"   Total rows:                     {self.stats['total_rows']}")
         print(f"   ✅ Processed:                   {self.stats['migrated']}")
@@ -788,7 +843,7 @@ class DocumentLocationMigrator:
         if self.download_cleaned_dir:
             print(f"   💾 Cleaned files downloaded:    {self.stats['downloaded_cleaned']}")
         print(f"\n📋 Phase 2: Copy to document_locations")
-        print(f"   ✅ Copied:                      {self.stats['copied_to_locations']}")
+        print(f"   ✅ Inserted:                    {self.stats['copied_to_locations']}")
         if self.stats['copy_overwritten'] > 0:
             print(f"   🔄 Overwritten:                 {self.stats['copy_overwritten']}")
         print(f"   ⏭️  Skipped (already exists):    {self.stats['copy_skipped']}")
