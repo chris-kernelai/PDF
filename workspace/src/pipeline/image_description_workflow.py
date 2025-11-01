@@ -8,6 +8,7 @@ import importlib.util
 import json
 import logging
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 from uuid import uuid4
 
+from google.api_core import exceptions as google_exceptions
 from google.cloud import storage
 from google.genai.types import CreateBatchJobConfig
 
@@ -182,6 +184,44 @@ def _parse_image_filename(filename: str, fallback_index: int) -> tuple[int, int]
         image_idx = fallback_index
 
     return page_num, image_idx
+
+
+def _create_batch_job_with_retry(client, model: str, src: str, config, max_retries: int = 3):
+    """
+    Create a batch job with retry logic for rate limiting errors.
+
+    Retries with a random backoff between 60-120 seconds when hitting rate limits.
+    """
+    for attempt in range(max_retries):
+        try:
+            job = client.batches.create(
+                model=model,
+                src=src,
+                config=config,
+            )
+            return job
+        except (google_exceptions.ResourceExhausted, google_exceptions.TooManyRequests) as e:
+            if attempt < max_retries - 1:
+                # Random backoff between 60 and 120 seconds
+                backoff_seconds = random.randint(60, 120)
+                logger.warning(
+                    "Rate limit hit while creating batch job (attempt %d/%d). "
+                    "Retrying in %d seconds. Error: %s",
+                    attempt + 1,
+                    max_retries,
+                    backoff_seconds,
+                    str(e),
+                )
+                time.sleep(backoff_seconds)
+            else:
+                logger.error("Max retries reached for batch job creation. Rate limit still in effect.")
+                raise
+        except Exception as e:
+            # For non-rate-limit errors, don't retry
+            logger.error("Non-rate-limit error creating batch job: %s", str(e))
+            raise
+
+    raise RuntimeError("Failed to create batch job after retries")
 
 
 class ImageDescriptionWorkflow:
@@ -495,7 +535,8 @@ class ImageDescriptionWorkflow:
                 f"gs://{bucket_name}/{self.gcs_output_prefix}/{prep_result.session_id}/{batch_file.stem}/"
             )
 
-            job = client.batches.create(
+            job = _create_batch_job_with_retry(
+                client=client,
                 model=self.model,
                 src=f"gs://{bucket_name}/{blob_path}",
                 config=CreateBatchJobConfig(dest=gcs_output_uri),

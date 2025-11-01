@@ -9,12 +9,15 @@ import argparse
 import glob
 import json
 import os
+import random
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+from google.api_core import exceptions as google_exceptions
 from google.cloud import storage
 from google.genai.types import CreateBatchJobConfig
 
@@ -66,15 +69,39 @@ def upload_file_vertex(local_path, bucket_name, gcs_prefix):
     return uri
 
 
-def create_batch_job(client, model, src_uri, gcs_output_uri):
-    """Create a Vertex Gemini batch job."""
-    job = client.batches.create(
-        model=model,
-        src=src_uri,
-        config=CreateBatchJobConfig(dest=gcs_output_uri),
-    )
-    print(f"✅ Created batch job: {job.name}")
-    return job.name
+def create_batch_job(client, model, src_uri, gcs_output_uri, max_retries=3):
+    """
+    Create a Vertex Gemini batch job with retry logic for rate limiting.
+
+    Retries with a random backoff between 60-120 seconds when hitting rate limits.
+    """
+    for attempt in range(max_retries):
+        try:
+            job = client.batches.create(
+                model=model,
+                src=src_uri,
+                config=CreateBatchJobConfig(dest=gcs_output_uri),
+            )
+            print(f"✅ Created batch job: {job.name}")
+            return job.name
+        except (google_exceptions.ResourceExhausted, google_exceptions.TooManyRequests) as e:
+            if attempt < max_retries - 1:
+                # Random backoff between 60 and 120 seconds
+                backoff_seconds = random.randint(60, 120)
+                print(
+                    f"⚠️  Rate limit hit while creating batch job (attempt {attempt + 1}/{max_retries}). "
+                    f"Retrying in {backoff_seconds} seconds. Error: {e}"
+                )
+                time.sleep(backoff_seconds)
+            else:
+                print(f"❌ Max retries reached for batch job creation. Rate limit still in effect.")
+                raise
+        except Exception as e:
+            # For non-rate-limit errors, don't retry
+            print(f"❌ Non-rate-limit error creating batch job: {e}")
+            raise
+
+    raise RuntimeError("Failed to create batch job after retries")
 
 
 # -------------------------------------------------------------------

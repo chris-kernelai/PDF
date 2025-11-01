@@ -15,12 +15,14 @@
 #   ./LOCAL_2_aws_helper.sh download [instance]        # Download processed results
 #   ./LOCAL_2_aws_helper.sh logs [instance]            # View processing logs
 #   ./LOCAL_2_aws_helper.sh status [instance]          # Check instance status
+#   ./LOCAL_2_aws_helper.sh check-processes            # Check Python processes on ALL instances
 #   ./LOCAL_2_aws_helper.sh clean [instance]           # Remove processed files
 #
 # Available instances:
 #   PDF (default): 204.236.163.8 - GPU (Tesla T4) - US West
-#   PDF-2:         3.101.154.54 - GPU (Tesla T4) - US West
+#   PDF-2:         18.144.25.6 - GPU (Tesla T4) - US West
 #   PDF-3:         13.52.177.251 - GPU (Tesla T4) - US West
+#   PDF-4:         54.176.75.213 - GPU (Tesla T4) - US West
 #   PDF-London:    35.178.204.146 - GPU (Tesla T4) - London
 #
 ################################################################################
@@ -41,6 +43,7 @@ Commands:
   download [instance]         Download processed results
   logs [instance]             View processing logs
   status [instance]           Check instance status
+  check-processes             Check Python processes on ALL instances
   clean [instance]            Remove processed files
 
 Instances:
@@ -71,7 +74,7 @@ get_instance_config() {
             INSTANCE_TYPE="GPU (Tesla T4 London)"
             ;;
         PDF-2)
-            INSTANCE_IP="3.101.154.54"
+            INSTANCE_IP="18.144.25.6"
             INSTANCE_ID="i-04ee570e5bfab51d9"
             INSTANCE_REGION="us-west-1"
             PEM_KEY="workspace/configs/keys/PDF.pem"
@@ -80,6 +83,13 @@ get_instance_config() {
         PDF-3)
             INSTANCE_IP="13.52.177.251"
             INSTANCE_ID="i-0072a25219e846862"
+            INSTANCE_REGION="us-west-1"
+            PEM_KEY="workspace/configs/keys/PDF_key.pem"
+            INSTANCE_TYPE="GPU (Tesla T4)"
+            ;;
+        PDF-4)
+            INSTANCE_IP="54.176.75.213"
+            INSTANCE_ID="i-0d33c305c629d3857"
             INSTANCE_REGION="us-west-1"
             PEM_KEY="workspace/configs/keys/PDF_key.pem"
             INSTANCE_TYPE="GPU (Tesla T4)"
@@ -565,6 +575,58 @@ ENDSSH
         fi
         ;;
 
+    check-processes)
+        echo -e "${BLUE}Checking Python processes on all instances...${NC}"
+        echo ""
+
+        # Array of all instances to check
+        INSTANCES=("PDF" "PDF-2" "PDF-3" "PDF-4" "PDF-London")
+        
+        for inst in "${INSTANCES[@]}"; do
+            # Get instance config
+            if get_instance_config "$inst" >/dev/null 2>&1; then
+                local_pem_key="$PEM_KEY"
+                local_instance_ip="$INSTANCE_IP"
+                local_instance_type="$INSTANCE_TYPE"
+                
+                echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "${BLUE}Instance: $inst ($local_instance_type)${NC}"
+                echo -e "${BLUE}IP: $local_instance_ip${NC}"
+                echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                
+                # Check if instance is reachable
+                if ssh -i "$local_pem_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no "${INSTANCE_USER}@${local_instance_ip}" "echo 'Connection test'" >/dev/null 2>&1; then
+                    # Get Python processes
+                    PYTHON_PROCS=$(ssh -i "$local_pem_key" -o ConnectTimeout=5 "${INSTANCE_USER}@${local_instance_ip}" << 'ENDSSH'
+ps aux | grep -i python | grep -v grep | head -10
+ENDSSH
+)
+                    
+                    if [ -n "$PYTHON_PROCS" ]; then
+                        echo -e "${GREEN}✅ Python processes running:${NC}"
+                        echo "$PYTHON_PROCS" | while IFS= read -r line; do
+                            # Extract key info: user, PID, CPU%, MEM%, command
+                            echo "  $line"
+                        done
+                        
+                        # Count of processes
+                        PROC_COUNT=$(echo "$PYTHON_PROCS" | wc -l | tr -d ' ')
+                        echo ""
+                        echo -e "${GREEN}Total: $PROC_COUNT Python process(es)${NC}"
+                    else
+                        echo -e "${YELLOW}⚠️  No Python processes found${NC}"
+                    fi
+                else
+                    echo -e "${RED}❌ Instance not reachable (may be stopped or network issue)${NC}"
+                fi
+                echo ""
+            fi
+        done
+        
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}✅ Check complete${NC}"
+        ;;
+
     *)
         echo "AWS Instance Helper"
         echo ""
@@ -583,6 +645,7 @@ ENDSSH
         echo "  run-md-only [instance]     Run pipeline (stop after markdown)"
         echo "  status [instance]          Check instance status"
         echo "  logs [instance]            View processing logs"
+        echo "  check-processes            Check Python processes on ALL instances"
         echo ""
         echo "Download Commands:"
         echo "  download [instance]        Download results to ./aws_results/"
@@ -593,8 +656,9 @@ ENDSSH
         echo ""
         echo "Available Instances:"
         echo "  PDF (default):  204.236.163.8  - GPU (Tesla T4) - US West"
-        echo "  PDF-2:          3.101.154.54   - GPU (Tesla T4) - US West"
+        echo "  PDF-2:          18.144.25.6   - GPU (Tesla T4) - US West"
         echo "  PDF-3:          13.52.177.251   - GPU (Tesla T4) - US West"
+        echo "  PDF-4:          54.176.75.213   - GPU (Tesla T4) - US West"
         echo "  PDF-London:     35.178.204.146 - GPU (Tesla T4) - London"
         echo ""
         echo "Examples:"
@@ -609,6 +673,7 @@ ENDSSH
         echo "  $0 run                     # Run on PDF instance"
         echo "  $0 run PDF-2               # Run on PDF-2 instance"
         echo "  $0 run PDF-London          # Run on PDF-London instance"
+        echo "  $0 check-processes         # Check Python processes on all instances"
         exit 1
         ;;
 esac

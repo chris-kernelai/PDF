@@ -56,6 +56,7 @@ class DocumentFetcher:
         max_doc_id: Optional[int] = None,
         run_all_images: bool = False,
         download_pdfs: bool = True,
+        specific_doc_ids: Optional[List[int]] = None,
     ) -> None:
         import yaml
 
@@ -69,6 +70,7 @@ class DocumentFetcher:
         self.max_doc_id = max_doc_id
         self.run_all_images = run_all_images
         self.download_pdfs = download_pdfs
+        self.specific_doc_ids = specific_doc_ids
 
         self.input_folder = self._resolve_path(self.config["paths"]["input_folder"])
         self.input_folder.mkdir(parents=True, exist_ok=True)
@@ -100,7 +102,10 @@ class DocumentFetcher:
 
     async def run(self) -> FetchStats:
         """Fetch documents and optionally download PDFs."""
-        if self.run_all_images:
+        if self.specific_doc_ids is not None:
+            # Use specific document IDs provided
+            documents = self._load_documents_for_ids(self.specific_doc_ids)
+        elif self.run_all_images:
             doc_ids = await fetch_doc_ids_missing_docling_img(self.supabase_config)
             # Filter by min/max doc ID range
             if self.min_doc_id is not None:
